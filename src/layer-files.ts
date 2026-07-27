@@ -36,6 +36,10 @@ export const ALWAYS_IGNORE = [
   "**/treelay.json",
   "**/treelay.yaml",
   "**/treelay.yml",
+  // The lockfile is manifest metadata, not content. Composing it would publish
+  // a layer's pins into every tree built from it — and, worse, make the leaf's
+  // own lockfile a *generated* file that `update` then reports as a change.
+  "**/treelay.lock",
 ];
 
 /** What sort of contribution a source file in a layer makes. */

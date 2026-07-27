@@ -135,9 +135,15 @@ export function resolveGitRevision(ref: GitRef, cacheDir?: string): string {
 export function liveGitRevision(ref: GitRef): string | undefined {
   if (isCommitSha(ref.committish)) return ref.committish;
   try {
-    const out = git(["ls-remote", ref.url, ref.committish]);
-    const line = out.split("\n").find((l) => l.trim() !== "");
-    return line?.split(/\s+/)[0];
+    // An *annotated* tag has two ids: the tag object, and the commit it points
+    // at. `ls-remote` only advertises the peeled form when the `^{}` pattern is
+    // asked for by name — and without it, comparing a tag object's id against
+    // the locked *commit* id reports drift on every annotated tag, forever.
+    const lines = git(["ls-remote", ref.url, ref.committish, `${ref.committish}^{}`])
+      .split("\n")
+      .filter((l) => l.trim() !== "");
+    const peeled = lines.find((l) => l.split(/\s+/)[1]?.endsWith("^{}"));
+    return (peeled ?? lines[0])?.split(/\s+/)[0];
   } catch {
     return undefined;
   }
