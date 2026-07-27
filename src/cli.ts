@@ -19,9 +19,10 @@ import { status, promote, extract, formatStatus } from "./reflux.js";
 import { eject, formatEject } from "./eject.js";
 import { validate, formatValidation } from "./validate.js";
 import { watch, formatWatchEvent } from "./watch.js";
+import { lockCommand } from "./lock-command.js";
 import { hasState, readState, sourceOf } from "./state.js";
-import { lockfilePath, writeLock } from "./lockfile.js";
-import { checkDrift, formatDrift, hasDrift } from "./drift.js";
+import { lockfilePath } from "./lockfile.js";
+import { formatDrift } from "./drift.js";
 import type { Values } from "./types.js";
 
 // The published version has exactly one home: package.json. `../package.json`
@@ -88,41 +89,10 @@ program
   .option("--drift", "report refs whose upstream has moved (network)")
   .description("resolve every layer ref and pin it in treelay.lock")
   .action((dir: string, opts: { check?: boolean; update?: boolean; drift?: boolean }) => {
-    const graph = resolve(dir, {
-      // `--check` must not be able to *fix* what it is checking, so it resolves
-      // in the normal (non-frozen) mode and then refuses to write.
-      ...(opts.update ? { updateRefs: true } : {}),
-    });
-
-    const refs = Object.entries(graph.lock?.refs ?? {});
-    if (opts.check) {
-      if (graph.lockDirty) {
-        console.error(
-          `${lockfilePath(dir)} is out of date.\n` +
-            `Run \`treelay lock ${dir}\` and commit the result.`,
-        );
-        process.exit(1);
-      }
-      console.log(`treelay.lock is up to date (${refs.length} pinned ref(s)).`);
-    } else if (graph.lock && graph.lockDir) {
-      const wrote = writeLock(graph.lockDir, graph.lock);
-      console.log(
-        wrote
-          ? `Wrote ${lockfilePath(dir)} — ${refs.length} pinned ref(s).`
-          : `treelay.lock already current (${refs.length} pinned ref(s)).`,
-      );
-    }
-
-    for (const [ref, entry] of refs.sort()) {
-      console.log(`  ${ref}\n    → ${shortRev(entry.resolved)}  ${entry.integrity.slice(0, 21)}…`);
-    }
-
-    if (opts.drift) {
-      const reports = checkDrift(graph);
-      const text = formatDrift(reports);
-      console.log(text || "\nAll pinned refs match their upstream.");
-      if (hasDrift(reports)) process.exit(1);
-    }
+    const result = lockCommand(dir, opts);
+    for (const line of result.output) console.log(line);
+    for (const line of result.errors) console.error(line);
+    if (result.exitCode !== 0) process.exit(result.exitCode);
   });
 
 /** Load an answers file (JSON or YAML) into a values object. */
