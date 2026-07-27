@@ -24,7 +24,12 @@ export interface TreelayState {
   answers: Values;
   /** relative path → content hash of what the template last produced. */
   baseline: Record<string, string>;
-  /** relative path → whether the template owns it (vs user-created). */
+  /**
+   * relative path → provenance. `owned` is true for a file *the user* created
+   * in the destination, false for one the template produced — the same polarity
+   * as {@link FileProvenance.owned}, and the opposite of what the name suggests
+   * on first reading.
+   */
   manifest: Record<string, { owned: boolean; fromLayer: string }>;
 }
 

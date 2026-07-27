@@ -16,6 +16,7 @@ import { compile } from "./compile.js";
 import { update, planUpdate } from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
 import { status, promote, extract, formatStatus } from "./reflux.js";
+import { eject, formatEject } from "./eject.js";
 import { hasState, readState, sourceOf } from "./state.js";
 import { lockfilePath, writeLock } from "./lockfile.js";
 import { checkDrift, formatDrift, hasDrift } from "./drift.js";
@@ -455,8 +456,13 @@ program
 program
   .command("eject")
   .argument("<dest>", "destination directory")
+  .option("--dry-run", "show what would be severed; remove nothing")
   .description("flatten and drop .treelay state (sever the template link)")
-  .action(() => notImplemented("eject"));
+  .action((dest: string, opts: { dryRun?: boolean }) => {
+    requireState(dest, "eject");
+    const result = eject(dest, opts.dryRun ? { dryRun: true } : {});
+    console.log(formatEject(result, dest));
+  });
 
 function notImplemented(cmd: string): never {
   console.error(`treelay ${cmd}: not implemented yet (see SPEC.md §12 build order)`);

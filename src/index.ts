@@ -81,6 +81,8 @@ export { roundTripVerify, composeToMemory, describeMismatches } from "./verify.j
 export type { VerifyResult, VerifyMismatch, MismatchKind } from "./verify.js";
 export { blastRadius, describeBlastRadius, commonAncestor } from "./blast-radius.js";
 export type { BlastRadius, BlastRadiusOptions } from "./blast-radius.js";
+export { eject, formatEject, NotEjectableError } from "./eject.js";
+export type { EjectOptions, EjectResult } from "./eject.js";
 
 // --- Layer refs, fetching and pinning (§2, §3) ---
 export {
