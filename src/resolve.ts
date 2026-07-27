@@ -11,6 +11,7 @@ import { c3Linearize } from "./c3.js";
 import { loadManifest, isWritable } from "./manifest.js";
 import { mergeVariableDecls } from "./variables.js";
 import { NotImplementedError } from "./errors.js";
+import { readLock } from "./lockfile.js";
 import type { Layer, LayerRef, ResolvedGraph } from "./types.js";
 
 /** Resolve a leaf directory into its full composition. */
@@ -52,7 +53,7 @@ export function resolve(srcDir: string): ResolvedGraph {
   const layers = [...parentsLowToHigh, ...mixins, self];
   const variables = mergeVariableDecls(layers);
 
-  return { layers, variables };
+  return { layers, variables, lock: readLock(root), lockDirty: false, lockDir: root };
 }
 
 /**

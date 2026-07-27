@@ -5,8 +5,27 @@
  * `.treelay` sidecar (§4), variables (§6), and the programmatic API (§10).
  */
 
+import type { TreelayLock } from "./lockfile.js";
+
 /** A reference to another layer: local path, npm spec, or git spec. */
 export type LayerRef = string;
+
+/**
+ * Where a layer's content came from, once resolved (§3).
+ *
+ * Local layers are edited in place; fetched ones live in the content-addressed
+ * cache at an exact revision and are read-only by construction — which is also
+ * what disqualifies them as promotion targets (§8).
+ */
+export interface LayerOrigin {
+  kind: "local" | "git" | "npm";
+  /** Canonical ref (lockfile key). Absent for the leaf and plain local layers. */
+  ref?: string;
+  /** Exact revision materialized: commit SHA or package version. */
+  revision?: string;
+  /** `sha256:…` over the materialized tree, as recorded in the lock. */
+  integrity?: string;
+}
 
 /** Per-file merge strategy (§4). */
 export type MergeStrategy =
@@ -72,6 +91,15 @@ export interface Manifest {
   abstract?: boolean;
   parents?: LayerRef[];
   mixins?: LayerRef[];
+  /**
+   * Trees vendored into the composed output at a fixed subpath (§3).
+   *
+   * `{ "packages": "git+file:///srv/packages.git#v1.2.0" }` materializes that
+   * repo at `packages/` in every compiled tree. Mount *paths* merge across the
+   * graph by ordinary layer precedence, so a leaf can hold one back at an older
+   * ref while its parents float — a ref override, not a separate mechanism.
+   */
+  mounts?: Record<string, LayerRef>;
   ignore?: string[];
   /** glob → strategy defaults. */
   merge?: Record<string, MergeStrategy>;
@@ -84,13 +112,24 @@ export interface Manifest {
 
 /** A loaded layer: its resolved location plus parsed manifest. */
 export interface Layer {
-  /** Stable identity (the ref as written, normalized). */
+  /**
+   * Stable identity. A local layer is identified by its absolute directory; a
+   * fetched one by its canonical ref, so provenance stays meaningful across
+   * machines whose caches sit in different places.
+   */
   id: string;
-  /** Absolute path to the layer's root directory. */
+  /** Absolute path to the layer's root directory (a cache path when fetched). */
   dir: string;
   manifest: Manifest;
   /** Whether the layer dir is writable (false for node_modules/git installs) — §8. */
   writable: boolean;
+  /** Where the content came from; local with no ref when omitted. */
+  origin?: LayerOrigin;
+  /**
+   * Subpath this layer's files are re-rooted under in the output (§3 mounts).
+   * Absent for ordinary layers, which compose at the tree root.
+   */
+  mountPath?: string;
 }
 
 /**
@@ -102,6 +141,22 @@ export interface ResolvedGraph {
   layers: Layer[];
   /** Merged variable declarations across the whole graph (§6). */
   variables: Record<string, VariableDecl>;
+  /**
+   * Pinned revisions for every remote ref this graph touched, in memory.
+   *
+   * Resolution deliberately does not write it: `resolve` is called by read-only
+   * commands too, and a lockfile appearing as a side effect of `explain` would
+   * be a surprise. Callers that own the source tree (`compile`, `treelay lock`)
+   * persist it when {@link ResolvedGraph.lockDirty} is set.
+   *
+   * Optional because a graph can also be *synthesized* — reflux builds partial
+   * stacks to test shadowing (§8) — and a synthetic stack pins nothing.
+   */
+  lock?: TreelayLock;
+  /** True when `lock` differs from what is on disk (entries added or advanced). */
+  lockDirty?: boolean;
+  /** Leaf directory the lockfile belongs beside. */
+  lockDir?: string;
 }
 
 /** A `.treelay` sidecar operation on an inherited file (§4). */

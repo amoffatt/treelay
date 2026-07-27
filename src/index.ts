@@ -81,3 +81,34 @@ export { roundTripVerify, composeToMemory, describeMismatches } from "./verify.j
 export type { VerifyResult, VerifyMismatch, MismatchKind } from "./verify.js";
 export { blastRadius, describeBlastRadius, commonAncestor } from "./blast-radius.js";
 export type { BlastRadius, BlastRadiusOptions } from "./blast-radius.js";
+
+// --- Layer refs, fetching and pinning (§2, §3) ---
+export {
+  parseRef,
+  canonicalRef,
+  pinnedRef,
+  isLocalRef,
+  isCommitSha,
+  InvalidRefError,
+} from "./refs.js";
+export type {
+  RefKind,
+  RemoteRefKind,
+  ParsedRef,
+  RemoteRef,
+  LocalRef,
+  GitRef,
+  NpmRef,
+} from "./refs.js";
+export {
+  LOCKFILE_NAME,
+  LOCKFILE_VERSION,
+  LockfileError,
+  emptyLock,
+  lockfilePath,
+  readLock,
+  writeLock,
+  serializeLock,
+  locksEqual,
+} from "./lockfile.js";
+export type { TreelayLock, LockEntry } from "./lockfile.js";
