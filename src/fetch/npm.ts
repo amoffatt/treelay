@@ -37,25 +37,29 @@ export class NpmResolveError extends Error {
   }
 }
 
-/** Locate an installed package's root directory, searching up from `fromDir`. */
+/**
+ * Locate an installed package's root directory, searching up from `fromDir`.
+ *
+ * Node's own resolver is only the *fallback* here, because it returns the
+ * realpath of what it finds. Layer directories are compared as strings all over
+ * treelay — nested-destination pruning (§7), promotion targets (§8) — and a
+ * resolver that silently canonicalizes symlinks would hand back a path in a
+ * different shape from every local layer beside it. Walking `node_modules`
+ * ourselves keeps the path in the caller's frame of reference, and as a bonus
+ * sidesteps packages whose `exports` map hides `./package.json`.
+ */
 function packageDir(ref: NpmRef, fromDir: string): string {
-  // `createRequire` needs a file path to anchor resolution; the directory's own
-  // notional package.json is the conventional anchor even when absent.
-  const require = createRequire(join(fromDir, "package.json"));
+  for (let dir = fromDir; ; dir = dirname(dir)) {
+    const candidate = join(dir, "node_modules", ref.name);
+    if (existsSync(join(candidate, "package.json"))) return candidate;
+    if (dirname(dir) === dir) break;
+  }
+
+  // Not in any plain node_modules — defer to Node (workspaces, PnP shims).
   try {
+    const require = createRequire(join(fromDir, "package.json"));
     return dirname(require.resolve(`${ref.name}/package.json`));
   } catch {
-    // Packages without a package.json export map still resolve via main.
-    try {
-      const entry = require.resolve(ref.name);
-      let dir = dirname(entry);
-      while (!existsSync(join(dir, "package.json")) && dirname(dir) !== dir) {
-        dir = dirname(dir);
-      }
-      if (existsSync(join(dir, "package.json"))) return dir;
-    } catch {
-      /* fall through to the diagnostic below */
-    }
     throw new NpmResolveError(
       ref.name,
       `not installed under ${fromDir}. treelay resolves npm layers from ` +

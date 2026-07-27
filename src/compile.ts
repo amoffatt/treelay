@@ -25,8 +25,9 @@ import {
   SIDECAR_SUFFIX,
 } from "./sidecar.js";
 import { strategyFor, deepMerge, applyMergePatch, applyJsonPatch } from "./merge/index.js";
-import { ALWAYS_IGNORE, destExclusions } from "./layer-files.js";
+import { ALWAYS_IGNORE, destExclusions, mountTarget } from "./layer-files.js";
 import { parseStructured, stringifyStructured } from "./serde.js";
+import { writeLock } from "./lockfile.js";
 import {
   writeState,
   lockFromGraph,
@@ -47,6 +48,14 @@ export interface CompileOptions {
   destDir: string;
   /** Final variable values (from `resolveValues`). */
   values?: Values;
+  /**
+   * Persist newly-resolved pins back into the source `treelay.lock` (§3).
+   *
+   * Defaults to true, following every package manager: the first build after a
+   * ref is added records what it resolved to, so the *next* build reproduces it.
+   * A frozen resolve never gets here — it fails on the unpinned ref instead.
+   */
+  writeLockfile?: boolean;
 }
 
 
@@ -155,6 +164,11 @@ export async function compile(
   };
   writeState(options.destDir, state, graph.variables, snapshot);
 
+  // Record any pins this build discovered, so the next one reproduces it.
+  if (options.writeLockfile !== false && graph.lockDirty && graph.lockDir && graph.lock) {
+    writeLock(graph.lockDir, graph.lock);
+  }
+
   return result;
 }
 
@@ -191,7 +205,9 @@ async function applyLayer(
     const { render: isTmpl, outPath: inner } = templateTarget(rel, suffix);
 
     if (isSidecar(inner)) {
-      ops.push(sidecarToOp(raw.toString("utf8"), inner, isTmpl, values));
+      const op = sidecarToOp(raw.toString("utf8"), inner, isTmpl, values);
+      op.target = mountTarget(layer, op.target);
+      ops.push(op);
       continue;
     }
 
@@ -199,7 +215,7 @@ async function applyLayer(
     if (sugar) {
       ops.push({
         kind: sugar.op,
-        target: await renderPath(sugar.target, values),
+        target: mountTarget(layer, await renderPath(sugar.target, values)),
         render: isTmpl,
         content: raw.toString("utf8"),
       });
@@ -208,8 +224,11 @@ async function applyLayer(
 
     // Plain file. Render the path always (when it has markup), the content only
     // when it opted in via the suffix (or the layer is render: all-text).
-    const target = await renderPath(inner, values);
-    if (target.trim() === "") continue; // conditional file dropped (§6 step 7)
+    // Emptiness is decided before the mount prefix goes on: a conditional file
+    // that rendered away is still dropped when the layer is mounted (§6 step 7).
+    const rendered = await renderPath(inner, values);
+    if (rendered.trim() === "") continue;
+    const target = mountTarget(layer, rendered);
 
     const doRenderContent = isTmpl || (renderAllText && looksTextual(inner));
     const data = doRenderContent

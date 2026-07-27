@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 
@@ -310,7 +310,9 @@ describe.skipIf(!NPM_REFS)("resolveRef — npm", () => {
   it("resolves a bare specifier through node_modules", () => {
     const pkg = installed("@acme/base", "2.3.1", { "a.txt": "packaged\n" });
     const leaf = writeTree(join(root, "leaf"), { "treelay.json": manifest({}) });
-    expect(resolveRef(npmRef("@acme/base"), leaf)).toBe(pkg);
+    // Realpath both sides: node's resolver resolves symlinks, and on macOS the
+    // temp dir itself is one (`/var` → `/private/var`).
+    expect(realpathSync(resolveRef(npmRef("@acme/base"), leaf))).toBe(realpathSync(pkg));
   });
 
   it("accepts an installed version that satisfies the requested range", () => {

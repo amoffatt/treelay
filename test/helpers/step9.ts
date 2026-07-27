@@ -17,10 +17,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolveRef } from "../../src/resolve.js";
+import { resolve, resolveRef } from "../../src/resolve.js";
 import { NotImplementedError } from "../../src/errors.js";
 import { parseRef } from "../../src/refs.js";
 import { lockfilePath } from "../../src/lockfile.js";
+import type { ResolvedGraph } from "../../src/types.js";
 
 /** True once `resolveRef` stops answering "not implemented" for `ref`. */
 function implemented(ref: string): boolean {
@@ -55,6 +56,30 @@ export function gitRef(repo: { url: string }, rev: string, subdir?: string): str
 export function npmRef(name: string, range?: string): string {
   return range ? `${name}@${range}` : name;
 }
+
+/**
+ * The options bag `resolve` grows once fetching lands (`src/fetch/index.ts`
+ * already defines them for `fetchLayer`).
+ *
+ * This is the suite's one forward-looking cast, and it is deliberate: the
+ * tests that use it are gated off until fetching exists, but they still have
+ * to *typecheck* today, and `resolve` currently takes a single argument. When
+ * the signature grows, the cast becomes redundant and can be deleted without
+ * touching a single test.
+ */
+export interface ResolveOptions {
+  /** Refuse refs the lock does not pin (CI posture). */
+  frozen?: boolean;
+  /** Re-resolve moving refs, advancing the lock. */
+  updateRefs?: boolean;
+  /** Cache root override; prefer `TREELAY_CACHE_DIR` where it reaches. */
+  cacheDir?: string;
+}
+
+export const resolveWith = resolve as unknown as (
+  srcDir: string,
+  options?: ResolveOptions,
+) => ResolvedGraph;
 
 /** Raw lockfile bytes, or undefined when the leaf has none. */
 export function lockBytes(leafDir: string): Buffer | undefined {

@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { enumerateLayer, type LayerEntry } from "./layer-files.js";
+import { enumerateLayer, mountTarget, type LayerEntry } from "./layer-files.js";
 import { parseSidecar } from "./sidecar.js";
 import { renderString } from "./render.js";
 import { strategyFor } from "./merge/index.js";
@@ -188,8 +188,8 @@ export async function explain(
       }
 
       const rendered = await tryRenderPath(entry.rawTarget, values);
-      const target = rendered.path;
-      if (target.trim() === "") continue; // conditional file dropped (§6 step 7)
+      if (rendered.path.trim() === "") continue; // conditional file dropped (§6 step 7)
+      const target = mountTarget(layer, rendered.path);
 
       const strategy = strategyFor(target, layer.manifest.merge);
       const existing = live.get(target);
@@ -285,7 +285,7 @@ async function explainOp(
       baseHash = sc.base;
       when = sc.when;
     } catch (err) {
-      record(entry.rawTarget, {
+      record(mountTarget(layer, entry.rawTarget), {
         layer: layer.id,
         name: summary.name,
         role: summary.role,
@@ -303,7 +303,7 @@ async function explainOp(
   if (!op) return;
 
   const rendered = await tryRenderPath(entry.rawTarget, values);
-  const target = rendered.path;
+  const target = mountTarget(layer, rendered.path);
 
   const contribution: Contribution = {
     layer: layer.id,

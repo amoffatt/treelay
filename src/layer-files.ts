@@ -99,6 +99,18 @@ export function destExclusions(layerDir: string, destDir?: string): string[] {
   return [posix, `${posix}/**`];
 }
 
+/**
+ * Re-root an output path under a layer's mount point (§3).
+ *
+ * A mounted layer composes exactly like any other — same strategies, same
+ * sidecars — except that every path it produces or operates on is prefixed.
+ * Keeping that in one function is what stops `compile` and `explain` from
+ * disagreeing about where a mounted file lands.
+ */
+export function mountTarget(layer: Layer, target: string): string {
+  return layer.mountPath ? `${layer.mountPath}/${target}` : target;
+}
+
 /** List the composable source files of a layer, lowest-level primitive. */
 export function listLayerFiles(layer: Layer, destDir?: string): string[] {
   return fg

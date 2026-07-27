@@ -148,11 +148,23 @@ export function readState(destDir: string): TreelayState {
   };
 }
 
-/** Build a lockfile from a resolved graph (versions filled in once npm/git land). */
+/**
+ * Build a destination lockfile from a resolved graph.
+ *
+ * `versions` is the record of *what was actually materialized* — canonical ref
+ * → exact revision — copied from the source `treelay.lock` at compile time. The
+ * two files are deliberately distinct: `treelay.lock` is the pin a repository
+ * commits and reviews, while this one is forensic, saying what a particular
+ * destination on a particular day was built from.
+ */
 export function lockFromGraph(graph: ResolvedGraph): LockFile {
+  const versions: Record<string, string> = {};
+  for (const ref of Object.keys(graph.lock?.refs ?? {}).sort()) {
+    versions[ref] = graph.lock!.refs[ref]!.resolved;
+  }
   return {
     lineage: graph.layers.map((l) => l.id),
-    versions: {},
+    versions,
   };
 }
 
