@@ -17,6 +17,7 @@ import { update, planUpdate } from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
 import { status, promote, extract, formatStatus } from "./reflux.js";
 import { eject, formatEject } from "./eject.js";
+import { validate, formatValidation } from "./validate.js";
 import { hasState, readState, sourceOf } from "./state.js";
 import { lockfilePath, writeLock } from "./lockfile.js";
 import { checkDrift, formatDrift, hasDrift } from "./drift.js";
@@ -443,8 +444,43 @@ function pick<T>(files: Record<string, T>, path: string): Record<string, T> {
 program
   .command("validate")
   .argument("[dir]", "leaf overlay directory", ".")
+  .option("--set <k=v>", "value used to render the composition", collectSet)
+  .option("--answers <file>", "answers file to seed values")
+  .option("--drift", "also probe upstreams for movement (network)")
+  .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
+  .option("--json", "emit machine-readable JSON")
   .description("check for cycles, failing patches, conflicts, lock drift")
-  .action(() => notImplemented("validate"));
+  .action(
+    async (
+      dir: string,
+      opts: {
+        set?: Values;
+        answers?: string;
+        drift?: boolean;
+        frozenLockfile?: boolean;
+        json?: boolean;
+      },
+    ) => {
+      const values = {
+        ...(opts.answers ? loadAnswers(opts.answers) : {}),
+        ...(opts.set ?? {}),
+      };
+      const report = await validate(dir, {
+        ...(Object.keys(values).length ? { values } : {}),
+        ...(opts.drift ? { drift: true } : {}),
+        ...(opts.frozenLockfile ? { frozen: true } : {}),
+      });
+
+      if (opts.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatValidation(report, dir));
+      }
+      // Warnings are reportable but not fatal, so a tree with stale pins still
+      // exits 0 — otherwise `validate` could not be a merge gate.
+      if (!report.ok) process.exit(1);
+    },
+  );
 
 program
   .command("watch")

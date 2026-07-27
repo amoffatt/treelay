@@ -83,6 +83,14 @@ export { blastRadius, describeBlastRadius, commonAncestor } from "./blast-radius
 export type { BlastRadius, BlastRadiusOptions } from "./blast-radius.js";
 export { eject, formatEject, NotEjectableError } from "./eject.js";
 export type { EjectOptions, EjectResult } from "./eject.js";
+export { validate, formatValidation } from "./validate.js";
+export type {
+  ValidateOptions,
+  ValidationReport,
+  ValidationIssue,
+  IssueSeverity,
+  IssueCode,
+} from "./validate.js";
 
 // --- Layer refs, fetching and pinning (§2, §3) ---
 export {
