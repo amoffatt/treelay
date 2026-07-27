@@ -37,7 +37,7 @@ import { stringify as stringifyYaml } from "yaml";
 import { hashContent } from "./hash.js";
 import { explain, type Contribution, type ExplainResult } from "./explain.js";
 import { resolve as resolveGraph, resolveRef } from "./resolve.js";
-import { STATE_DIR, readState, writeState, lockFromGraph } from "./state.js";
+import { STATE_DIR, readState, writeState, lockFromGraph, sourceOf } from "./state.js";
 import { SIDECAR_SUFFIX } from "./sidecar.js";
 import { parseStructured } from "./serde.js";
 import { generateMergePatch } from "./merge/structured.js";
@@ -79,7 +79,7 @@ interface Context {
 
 async function loadContext(destDir: string): Promise<Context> {
   const state = readState(destDir);
-  const srcDir = state.lock.lineage[state.lock.lineage.length - 1];
+  const srcDir = sourceOf(state);
   if (!srcDir) throw new Error(`Corrupt lockfile in ${destDir}: empty lineage.`);
 
   const graph = resolveGraph(srcDir);
@@ -457,6 +457,11 @@ function buildPatchSidecar(path: string, base: string, desired: string): string 
 /**
  * Rewrite the baseline so a verified promotion counts as "from template" and
  * drops off the local-changes list (§8) — it now flows down by inheritance.
+ *
+ * The content snapshot is rewritten alongside the hashes, not just the hashes:
+ * `update` merges against the baseline *content* (§7), so leaving that stale
+ * would make the next update reconcile against a base the template no longer
+ * produces.
  */
 function rebaseline(
   ctx: Context,
@@ -476,6 +481,7 @@ function rebaseline(
     ctx.destDir,
     { lock: lockFromGraph(graph), answers: ctx.values, baseline, manifest },
     graph.variables,
+    composed,
   );
 }
 

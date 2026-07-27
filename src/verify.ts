@@ -13,43 +13,25 @@
  * failure.
  */
 
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import fg from "fast-glob";
 
-import { compile } from "./compile.js";
-import { STATE_DIR } from "./state.js";
+import { composeFiles } from "./compile.js";
 import type { ResolvedGraph, Values } from "./types.js";
 
 /**
  * Compose a graph and return its output in memory, without touching any real
- * destination.
- *
- * TODO: `compile.ts` is growing a `composeFiles` in-memory API; swap this
- * throwaway-directory implementation for it once that lands, to avoid the
- * round-trip through disk.
+ * destination — verification must not be able to disturb what it is checking.
  */
 export async function composeToMemory(
   graph: ResolvedGraph,
   values: Values,
+  destDir?: string,
 ): Promise<Map<string, Buffer>> {
-  const temp = mkdtempSync(join(tmpdir(), "treelay-verify-"));
-  try {
-    await compile(graph, { destDir: temp, values });
-    const files = new Map<string, Buffer>();
-    for (const rel of fg.sync("**/*", {
-      cwd: temp,
-      dot: true,
-      onlyFiles: true,
-      ignore: [`${STATE_DIR}/**`],
-    })) {
-      files.set(rel, readFileSync(join(temp, rel)));
-    }
-    return files;
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
-  }
+  const composed = await composeFiles(graph, values, destDir);
+  const files = new Map<string, Buffer>();
+  for (const [rel, entry] of composed) files.set(rel, entry.data);
+  return files;
 }
 
 export type MismatchKind =
@@ -87,7 +69,7 @@ export async function roundTripVerify(
   values: Values,
   options: VerifyOptions = {},
 ): Promise<VerifyResult> {
-  const composed = await composeToMemory(graph, values);
+  const composed = await composeToMemory(graph, values, destDir);
   const mismatches: VerifyMismatch[] = [];
 
   for (const [rel, expected] of composed) {

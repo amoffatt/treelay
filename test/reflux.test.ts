@@ -14,7 +14,8 @@ import { parse as parseYaml } from "yaml";
 import { resolve } from "../src/resolve.js";
 import { compile } from "../src/compile.js";
 import { status, promote, extract, formatStatus } from "../src/reflux.js";
-import { readState } from "../src/state.js";
+import { planUpdate } from "../src/update.js";
+import { readState, readBaselineFile } from "../src/state.js";
 import { hashContent } from "../src/hash.js";
 import type { Change } from "../src/types.js";
 
@@ -254,6 +255,35 @@ describe("reflux — promote", () => {
     await promote(dest, await status(dest), { to: "base" });
 
     expect(readState(dest).baseline["a.txt"]).toBe(hashContent("promoted\n"));
+  });
+
+  it("refreshes the baseline content snapshot, not just its hashes", async () => {
+    // `update` merges against the baseline *content* (§7). If a promote left
+    // that snapshot stale, the next update would reconcile against a base the
+    // template no longer produces.
+    layer("base", { "a.txt": "base-a\n" });
+    const leaf = layer("leaf", {
+      "treelay.json": JSON.stringify({ name: "leaf", parents: ["../base"] }),
+    });
+    const dest = await build(leaf);
+    write(dest, "a.txt", "promoted\n");
+    await promote(dest, await status(dest), { to: "base" });
+
+    expect(readBaselineFile(dest, "a.txt")?.toString("utf8")).toBe("promoted\n");
+  });
+
+  it("keeps a later update quiet after a promote (no phantom drift)", async () => {
+    layer("base", { "a.txt": "base-a\n" });
+    const leaf = layer("leaf", {
+      "treelay.json": JSON.stringify({ name: "leaf", parents: ["../base"] }),
+    });
+    const dest = await build(leaf);
+    write(dest, "a.txt", "promoted\n");
+    await promote(dest, await status(dest), { to: "base" });
+
+    const plan = await planUpdate(dest, { prompt: false });
+    const moved = Object.entries(plan.files).filter(([, r]) => r !== "unchanged");
+    expect(moved).toEqual([]);
   });
 });
 
