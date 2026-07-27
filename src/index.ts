@@ -31,9 +31,26 @@ export {
   applyMergePatch,
   applyJsonPatch,
 } from "./merge/index.js";
-export type { Patch3WayArgs } from "./merge/patch.js";
+export { mergeText3, MERGE_LABELS } from "./merge/patch.js";
+export { mergeStructured3 } from "./merge/structured.js";
+export type {
+  Patch3WayArgs,
+  TextMerge3Args,
+  TextMerge3Result,
+} from "./merge/patch.js";
 export { hashContent, matchesHash } from "./hash.js";
-export { compile } from "./compile.js";
+export { compile, composeFiles, summarize } from "./compile.js";
+export type { FileEntry } from "./compile.js";
+export {
+  readState,
+  writeState,
+  readBaselineFile,
+  statePaths,
+  hasState,
+  sourceOf,
+  STATE_DIR,
+} from "./state.js";
+export type { TreelayState, LockFile } from "./state.js";
 export {
   ALWAYS_IGNORE,
   SelfCompileError,
@@ -50,4 +67,5 @@ export {
   summarizeLayers,
 } from "./explain.js";
 export { update, planUpdate } from "./update.js";
+export type { UpdateOptions, UpdatePlan, Resolution } from "./update.js";
 export { status, promote, extract } from "./reflux.js";

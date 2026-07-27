@@ -319,6 +319,29 @@ describe("update — baseline bookkeeping", () => {
     expect(existsSync(join(statePaths(dest()).baselineDir, "gone.txt"))).toBe(false);
   });
 
+  it("treats a stale baseline snapshot as no base rather than merging wrongly", async () => {
+    // Any writer that advances baseline.json without refreshing the content
+    // snapshot would otherwise have `update` merge against the wrong ancestor.
+    const v1 = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n";
+    const leaf = layer("leaf", { "app.txt": v1 });
+    await first(leaf);
+
+    // Corrupt the snapshot so it no longer matches the recorded hash.
+    writeFileSync(
+      join(statePaths(dest()).baselineDir, "app.txt"),
+      "something else entirely\n",
+    );
+
+    edit("app.txt", v1.replace("line1\n", "MINE\n"));
+    layer("leaf", { "app.txt": v1.replace("line8\n", "THEIRS\n") });
+
+    const plan = await update(dest(), NEVER_PROMPT);
+
+    // Without a trustworthy base this cannot be merged, so it must surface
+    // rather than silently produce a merge against the wrong ancestor.
+    expect(plan.files["app.txt"]).toBe("conflict");
+  });
+
   it("does not re-offer a resolved conflict on the next update", async () => {
     const leaf = layer("leaf", { "app.txt": "alpha\nbeta\ngamma\n" });
     await first(leaf);

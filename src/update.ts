@@ -239,8 +239,10 @@ function decide(
   if (theirsUnchanged) return { path, resolution: "keep-ours" };
   if (ours.equals(theirs)) return { path, resolution: "unchanged" };
 
-  // Both sides changed. Merge if we can read all three as text.
-  const base = readBaselineFile(destDir, path);
+  // Both sides changed. Merge if we can read all three as text — and only if
+  // the snapshot still matches the recorded hash, so a stale base becomes a
+  // conflict rather than a silently wrong merge.
+  const base = readBaselineFile(destDir, path, baseHash);
   if (!base || isBinary(base) || isBinary(ours) || isBinary(theirs)) {
     return conflictOver(path, ours, theirs, options);
   }

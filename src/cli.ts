@@ -12,6 +12,7 @@ import { parse as parseYaml } from "yaml";
 import { resolve } from "./resolve.js";
 import { resolveValues } from "./variables.js";
 import { compile } from "./compile.js";
+import { update, planUpdate } from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
 import { hasState } from "./state.js";
 import type { Values } from "./types.js";
@@ -91,8 +92,88 @@ program
   .command("update")
   .argument("<dest>", "destination directory")
   .option("--set <k=v>", "override a saved answer", collectSet)
+  .option(
+    "--on-conflict <mode>",
+    "how to surface conflicts: markers | rej",
+    "markers",
+  )
+  .option("--no-prompt", "do not prompt for newly-introduced variables")
+  .option("--dry-run", "show what would change; write nothing")
   .description("re-render with saved answers and 3-way merge into the project")
-  .action(() => notImplemented("update"));
+  .action(
+    async (
+      dest: string,
+      opts: {
+        set?: Values;
+        onConflict?: string;
+        prompt?: boolean;
+        dryRun?: boolean;
+      },
+    ) => {
+      if (!hasState(dest)) {
+        console.error(
+          `treelay update: ${dest} has no .treelay state — it was not created ` +
+            `by treelay. Use \`treelay compile <src> ${dest}\` first.`,
+        );
+        process.exit(2);
+      }
+      if (opts.onConflict !== "markers" && opts.onConflict !== "rej") {
+        console.error(
+          `treelay update: --on-conflict expects "markers" or "rej", got "${opts.onConflict}"`,
+        );
+        process.exit(2);
+      }
+
+      const options = {
+        onConflict: opts.onConflict,
+        ...(opts.set ? { set: opts.set } : {}),
+        prompt: opts.prompt !== false,
+      } as const;
+
+      const plan = opts.dryRun
+        ? await planUpdate(dest, options)
+        : await update(dest, options);
+
+      if (plan.newVariables.length) {
+        console.log(`New variables: ${plan.newVariables.join(", ")}`);
+      }
+
+      // Only report files the working tree actually gained, lost, or had
+      // rewritten. `keep-ours`/`unchanged` write nothing, and listing them every
+      // run buries the handful that moved — and makes a no-op look like work.
+      const mark: Record<string, string> = {
+        "take-theirs": "U",
+        merged: "M",
+        conflict: "C",
+        delete: "D",
+      };
+      const changed = Object.entries(plan.files).filter(([, r]) => r in mark);
+      const kept = Object.values(plan.files).filter((r) => r === "keep-ours").length;
+
+      if (!changed.length) {
+        console.log("Already up to date.");
+        if (kept) console.log(`(${kept} file(s) with local edits left as-is.)`);
+        return;
+      }
+
+      for (const [path, r] of changed.sort()) {
+        console.log(`  ${mark[r]}  ${path}${r === "conflict" ? "  ← conflict" : ""}`);
+      }
+      if (kept) console.log(`  … ${kept} file(s) with local edits left as-is.`);
+
+      if (plan.conflicts.length) {
+        console.error(
+          `\n${plan.conflicts.length} conflict(s). ` +
+            (opts.dryRun
+              ? "Re-run without --dry-run to write them."
+              : options.onConflict === "rej"
+                ? "Your files are unchanged; incoming versions are in *.rej."
+                : "Resolve the markers, then run `treelay update` again."),
+        );
+        process.exit(1);
+      }
+    },
+  );
 
 program
   .command("status")

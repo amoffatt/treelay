@@ -14,6 +14,7 @@ import {
   rmSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { hashContent } from "./hash.js";
 import type { ResolvedGraph, VariableDecl, Values } from "./types.js";
 
 export const STATE_DIR = ".treelay";
@@ -113,14 +114,26 @@ export function writeState(
 
 /**
  * Read one file's baseline content — the merge base for `update` (§7).
- * Undefined when the destination predates snapshotting or never had the file.
+ *
+ * Undefined when the destination predates snapshotting, never had the file, or
+ * the snapshot has gone stale. `expectedHash` is what makes the last case safe:
+ * any writer that advances `baseline.json` without passing a fresh `snapshot` to
+ * {@link writeState} leaves content that no longer matches, and merging against
+ * a wrong base corrupts silently. Verifying here turns that into a plain
+ * "no base available", which callers surface as a conflict instead.
  */
 export function readBaselineFile(
   destDir: string,
   rel: string,
+  expectedHash?: string,
 ): Buffer | undefined {
   const abs = join(statePaths(destDir).baselineDir, rel);
-  return existsSync(abs) ? readFileSync(abs) : undefined;
+  if (!existsSync(abs)) return undefined;
+  const data = readFileSync(abs);
+  if (expectedHash !== undefined && hashContent(data) !== expectedHash) {
+    return undefined;
+  }
+  return data;
 }
 
 /** Read back persisted state (used by update/status/reflux). */
