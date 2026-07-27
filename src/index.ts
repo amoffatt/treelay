@@ -83,6 +83,8 @@ export { blastRadius, describeBlastRadius, commonAncestor } from "./blast-radius
 export type { BlastRadius, BlastRadiusOptions } from "./blast-radius.js";
 export { eject, formatEject, NotEjectableError } from "./eject.js";
 export type { EjectOptions, EjectResult } from "./eject.js";
+export { watch, formatWatchEvent, WatchTargetError } from "./watch.js";
+export type { WatchOptions, WatchEvent, WatchHandle } from "./watch.js";
 export { validate, formatValidation } from "./validate.js";
 export type {
   ValidateOptions,

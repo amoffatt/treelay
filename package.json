@@ -46,9 +46,10 @@
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0"
   },
   "dependencies": {
+    "chokidar": "^5.0.0",
     "commander": "^15",
     "diff": "^9",
     "fast-glob": "^3",
@@ -63,6 +64,7 @@
   "devDependencies": {
     "@types/node": "^26",
     "@types/picomatch": "^4.0.3",
+    "@types/semver": "^7.7.1",
     "tsup": "^8",
     "typescript": "^6",
     "vitest": "^4"

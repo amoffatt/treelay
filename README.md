@@ -15,7 +15,10 @@ edits can be pushed back up into the layers they belong to (`promote`).
 > append/prepend, tombstones, sidecar/suffix ops, **unified-diff patches with true
 > 3-way merge**, `.treelay` state, **`explain`** for tracing where any file came
 > from, and **git/npm layer refs pinned in `treelay.lock`** with vendored
-> `mounts` and drift detection. Remaining per SPEC §12: `watch` and `eject`.
+> `mounts` and drift detection. `validate`, `watch` and `eject` complete the
+> SPEC §12 build order — every documented command is implemented. What remains
+> is the **[open]** v2 design work: hunk-level reflux, `by-key` array merging,
+> and the reflux/variables interaction (§8).
 
 ## Why not just OverlayFS / copier / Kustomize?
 
@@ -71,9 +74,24 @@ treelay lock    [dir]          # resolve every layer ref and pin it
                                #   --check  --update  --drift
 treelay plan    [dir]          # print the linearized layer order
 treelay explain <dir> [file]   # trace file provenance (--json for machine output)
+treelay validate [dir]         # cycles, failing patches, conflicts, stale lock
+                               #   --drift (network)  --json
+treelay watch   <src> <dest>   # recompile on change
+                               #   --debounce ms  --poll
+treelay eject   <dest>         # drop .treelay state, keep the files (--dry-run)
 ```
 
 `compile`, `update` and `plan` also take `--frozen-lockfile`.
+
+`validate` is built to be a merge gate: it reports every problem it can find in
+one pass instead of stopping at the first, exits non-zero only on real errors
+(stale pins and missing answers are warnings), and always lists the checks it
+could *not* run — a clean report that quietly skipped half of them would be
+worse than a noisy one.
+
+`eject` is one-way. It deletes the baseline that makes `update` a three-way
+merge rather than a guess, and nothing in the output can reconstruct it, so
+`--dry-run` shows what the link was tracking before you cut it.
 
 ### Layers from git and npm, pinned
 
@@ -286,6 +304,8 @@ still local until you wire it in.
   A destination *equal to* a layer root is refused. (SPEC §7)
 
 ## Development
+
+Requires Node 20.19 or newer.
 
 ```bash
 npm install

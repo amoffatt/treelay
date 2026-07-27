@@ -2,8 +2,8 @@
 /**
  * treelay CLI — SPEC §9.
  *
- * Thin shell over the library. Commands are wired to their API entry points;
- * unimplemented ones surface a clear "not implemented yet" until built (§12).
+ * Thin shell over the library: every command is a thin wrapper over an API
+ * entry point, so anything worth testing lives in the module behind it.
  */
 
 import { readFileSync } from "node:fs";
@@ -18,6 +18,7 @@ import { explain, explainDest, formatExplanation } from "./explain.js";
 import { status, promote, extract, formatStatus } from "./reflux.js";
 import { eject, formatEject } from "./eject.js";
 import { validate, formatValidation } from "./validate.js";
+import { watch, formatWatchEvent } from "./watch.js";
 import { hasState, readState, sourceOf } from "./state.js";
 import { lockfilePath, writeLock } from "./lockfile.js";
 import { checkDrift, formatDrift, hasDrift } from "./drift.js";
@@ -486,8 +487,58 @@ program
   .command("watch")
   .argument("<src>", "leaf overlay directory")
   .argument("<dest>", "destination directory")
+  .option("--set <k=v>", "set a variable", collectSet)
+  .option("--answers <file>", "answers file to seed values")
+  .option("--debounce <ms>", "settle time before recompiling", "120")
+  .option("--poll", "poll instead of using native events (network/Docker mounts)")
+  .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
   .description("recompile on change")
-  .action(() => notImplemented("watch"));
+  .action(
+    async (
+      src: string,
+      dest: string,
+      opts: {
+        set?: Values;
+        answers?: string;
+        debounce: string;
+        poll?: boolean;
+        frozenLockfile?: boolean;
+      },
+    ) => {
+      const debounceMs = Number(opts.debounce);
+      if (!Number.isFinite(debounceMs) || debounceMs < 0) {
+        console.error(`treelay watch: --debounce expects milliseconds, got "${opts.debounce}"`);
+        process.exit(2);
+      }
+      const values = {
+        ...(opts.answers ? loadAnswers(opts.answers) : {}),
+        ...(opts.set ?? {}),
+      };
+
+      const handle = await watch(src, dest, {
+        debounceMs,
+        ...(opts.poll ? { usePolling: true } : {}),
+        ...(Object.keys(values).length ? { values } : {}),
+        ...(opts.frozenLockfile ? { frozen: true } : {}),
+        onEvent: (event) => {
+          // Failures go to stderr so piping the build log keeps them separable.
+          const line = formatWatchEvent(event);
+          if (event.kind === "failed") console.error(line);
+          else console.log(line);
+        },
+      });
+
+      // Watch is the one command that does not end on its own.
+      const stop = () => {
+        void handle.close().then(() => {
+          console.log("\nStopped watching.");
+          process.exit(0);
+        });
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+    },
+  );
 
 program
   .command("eject")
@@ -499,11 +550,6 @@ program
     const result = eject(dest, opts.dryRun ? { dryRun: true } : {});
     console.log(formatEject(result, dest));
   });
-
-function notImplemented(cmd: string): never {
-  console.error(`treelay ${cmd}: not implemented yet (see SPEC.md §12 build order)`);
-  process.exit(2);
-}
 
 program.parseAsync().catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

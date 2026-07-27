@@ -828,15 +828,27 @@ treelay explain <dir> [file] [--set k=v] [--answers f] [--json]
                                # trace which layers touched a file, in order, with patches
                                # <dir> = a source layer, or a compiled destination
                                # omit [file] to explain every path in the composition
-treelay validate [dir]         # cycles? patches apply? unresolved conflicts? drift vs lock?
-treelay watch   <src> <dest>   # recompile on change
-treelay eject   <dest>         # flatten + drop .treelay state (sever the template link)
+treelay validate [dir] [--set k=v] [--answers f] [--drift] [--json]
+                               # cycles? patches apply? unresolved conflicts? drift vs lock?
+treelay watch   <src> <dest> [--set k=v] [--debounce ms] [--poll]
+                               # recompile on change
+treelay eject   <dest> [--dry-run]
+                               # flatten + drop .treelay state (sever the template link)
 ```
 
 `promote` and `extract` always end with the §8 round-trip recompile-and-verify,
 and both refuse read-only or shadowed targets with a clear explanation.
 
 `compile`, `update` and `plan` all accept `--frozen-lockfile` (§3).
+
+`validate` **collects** rather than stopping at the first problem: it is
+producing a report, not an artifact, so a finding only suppresses the checks
+that genuinely cannot run without it, and whatever went unchecked is always
+stated. Errors exit non-zero; warnings (stale pins, missing answers) do not, so
+it can be a merge gate. `watch` re-resolves the whole graph on every pass —
+editing a manifest can reshape the layer stack, so nothing from the previous
+pass can be assumed still valid. `eject` is one-way: the baseline it removes is
+the merge base `update` needs, and no part of the output can reconstruct it.
 
 `plan` and `explain` are not nice-to-haves — they are the debugging story for a
 system whose entire job is "this file came from somewhere non-obvious." Build
@@ -931,8 +943,12 @@ De-risk by building resolution first, then output, then the bidirectional loops:
 7. ✅ `explain` — per-file provenance (source layers or a compiled destination; `--json`)
 8. ✅ `status` + file-level `promote` / `extract` — reflux (pushes changes *up*)
 9. ✅ npm/git layer resolution + `mounts` + `treelay.lock` (pins, drift, `--frozen-lockfile`)
-10. `watch` / `eject`  ← next
+10. ✅ `validate` / `watch` / `eject` — the remaining §9 surface
 
 Demoable and trustworthy after step 3; templated scaffolding works at step 4;
 the headline pull-down lands at step 6, and the bidirectional link closes at
 step 8.
+
+Every command in §9 is now implemented. What remains is the **[open]** design
+work rather than build order: hunk-level reflux, `by-key` array merging, and the
+reflux/variables interaction (§8) — all deferred to v2 on purpose.
