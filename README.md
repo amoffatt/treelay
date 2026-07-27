@@ -7,14 +7,15 @@ directory. The output stays **linked** to its template, so template changes can
 be pulled into an already-created, already-edited project (`update`), and local
 edits can be pushed back up into the layers they belong to (`promote`).
 
-> **Status: early, working — the link is bidirectional.** The architecture and
-> full design are specified in [SPEC.md](./SPEC.md). Resolution (C3), value
-> resolution, **`compile`**, **`update`** (pulls template changes *down*) and
-> **`status`/`promote`/`extract`** (push local edits *up*) are implemented and
-> tested, with rendering, deep-merge, append/prepend, tombstones, sidecar/suffix
-> ops, **unified-diff patches with true 3-way merge**, `.treelay` state, and
-> **`explain`** for tracing where any file came from. Remaining per SPEC §12: npm
-> and git layer refs, `watch`, and `eject`.
+> **Status: early, working — the link is bidirectional and layers are
+> distributable.** The architecture and full design are specified in
+> [SPEC.md](./SPEC.md). Resolution (C3), value resolution, **`compile`**,
+> **`update`** (pulls template changes *down*) and **`status`/`promote`/`extract`**
+> (push local edits *up*) are implemented and tested, with rendering, deep-merge,
+> append/prepend, tombstones, sidecar/suffix ops, **unified-diff patches with true
+> 3-way merge**, `.treelay` state, **`explain`** for tracing where any file came
+> from, and **git/npm layer refs pinned in `treelay.lock`** with vendored
+> `mounts` and drift detection. Remaining per SPEC §12: `watch` and `eject`.
 
 ## Why not just OverlayFS / copier / Kustomize?
 
@@ -32,7 +33,11 @@ See [SPEC.md §1](./SPEC.md) for the full comparison.
 ## Core ideas
 
 - **Composition graph** — `parents` (transitive, C3-linearized) and `mixins`,
-  with precedence `parents < mixins < self`.
+  with precedence `mounts < parents < mixins < self`.
+- **Distributable layers** — a parent, mixin or mount can be a local path, a git
+  ref, or an npm package. Whatever a build resolves is pinned in `treelay.lock`,
+  so the next build reproduces it and an upstream that has moved is *reported*
+  rather than silently followed.
 - **Per-file merge** — replace, deep-merge (JSON/YAML), 3-way text patch,
   structured patch (RFC 7386/6902), append/prepend, tombstone delete.
 - **`.treelay` sidecars** — the canonical operation format carrying strategy, the
@@ -59,9 +64,73 @@ treelay promote <dest> [files...] --to <layer>   # push edits up into a layer
                                #   --dry-run  --no-verify
 treelay extract <dest> [files...] --as <path>    # capture edits as a new layer
                                #   --mixin  --name
+treelay lock    [dir]          # resolve every layer ref and pin it
+                               #   --check  --update  --drift
 treelay plan    [dir]          # print the linearized layer order
 treelay explain <dir> [file]   # trace file provenance (--json for machine output)
 ```
+
+`compile`, `update` and `plan` also take `--frozen-lockfile`.
+
+### Layers from git and npm, pinned
+
+A parent, mixin or mount can live anywhere. The three forms are told apart by
+shape, so nothing has to be declared twice:
+
+```jsonc
+{
+  "parents": ["../core", "@acme/node-base@^2", "github:acme/base#v2"],
+  "mounts":  { "packages": "git+https://host/acme/packages.git#v1.2.0" }
+}
+```
+
+Add `?path=core/_layer` to any non-local ref to use a subdirectory of the
+fetched tree as the layer root.
+
+**`mounts` vendor a whole tree into the output** at a fixed subpath. Mount paths
+merge by ordinary layer precedence, which is the point: a leaf can hold
+`packages/` back at an older pin while its parents float, using the same
+override rule as everything else rather than a separate package mechanism.
+
+```console
+$ treelay plan edo/soredi/_layer
+Layers (lowest → highest precedence):
+  1. mount:packages  [mounted at packages/, pinned 64cf108ee311]
+  2. core
+  3. soredi
+```
+
+Whatever gets materialized is pinned in `treelay.lock` beside the leaf manifest
+— canonical ref → exact commit (or version) plus an integrity hash over the
+tree. It is deterministically serialized, so re-resolving an unchanged tree
+produces byte-identical output and never shows up in a diff.
+
+```console
+$ treelay lock . --check      # CI: is the lockfile complete and current?
+$ treelay lock . --drift      # has anything moved upstream? (exits 1 if so)
+1 ref(s) have moved upstream since treelay.lock was written:
+  git+https://host/acme/packages.git#v1.2.0
+    pinned  64cf108ee311
+    v1.2.0 is now  3991f53a3bf4  (packages/)
+This build used the pinned revisions. Run `treelay lock --update` to advance them.
+```
+
+**Drift is reported, never followed.** `compile` and `update` keep producing the
+locked revision even after a branch advances — that is what pinning means, and
+an update that quietly recomposed at a newer commit would make "pull my
+template's changes down" mean something different depending on the day.
+`treelay lock --update` is the only thing that advances a pin, and
+`--frozen-lockfile` refuses to resolve anything the lock does not already pin.
+
+Two asymmetries worth knowing:
+
+- **Git pins are enforced; npm pins are recorded.** treelay materializes a git
+  commit from its own cache, so a build reproduces regardless of the branch. npm
+  layers resolve through the installed `node_modules` — treelay checks the
+  version satisfies the range and records it, but installation stays your
+  package manager's job. Rolling one back is `npm ci`'s job, not treelay's.
+- **Offline means *unknown*, not *unchanged*.** A drift probe that could not
+  reach the remote says so rather than reporting in sync.
 
 ### Pulling template changes into a project you've edited
 
@@ -119,8 +188,10 @@ src/config.json  ← with-ci (deep-merge)
   folded in: @acme/node-base, sidecar
 ```
 
-Layers that cannot be written to — npm/git parents, once those land — are
+Layers that cannot be written to — fetched git/npm layers, and mounts — are
 tagged `[read-only]`, which is what filters them out as promotion targets (§8).
+Fetched layers also show the revision in use, so `explain` answers "which
+version of the base am I actually on?" without a second command.
 
 A compiled destination explains itself — it reconstructs its own graph from the
 lockfile lineage and re-renders with the answers it was built with:
@@ -202,6 +273,10 @@ still local until you wire it in.
   gitlink *file* that a git submodule checkout carries. Layers vendored as
   submodules are safe to compose; `.gitignore`/`.gitmodules` are ordinary
   content and compose normally. (SPEC §4)
+- **`treelay.lock` never composes.** Like the manifest, it is layer metadata,
+  not content — otherwise a layer's pins would be published into every tree
+  built from it, and the leaf's own lockfile would show up as a generated file
+  that `update` reports as changed.
 - **The destination may live inside the source tree.** Compiling into a
   gitignored `build/` within the source repo is supported: the destination is
   pruned from the layer walk, so recompiles never re-consume their own output.

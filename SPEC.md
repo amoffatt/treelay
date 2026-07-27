@@ -57,6 +57,7 @@ Each overlay directory carries `treelay.json` (or a `"treelay"` key in
   "abstract": false,                 // true = inherit-only, not compilable standalone
   "parents": ["@acme/node-base@^2", "../shared-eslint"],
   "mixins":  ["@acme/with-docker", "@acme/with-ci"],
+  "mounts":  { "packages": "git+https://host/acme/packages.git#v1.2.0" },
   "ignore":  ["node_modules", ".git", ".treelay"],
   "merge": {
     "*.json":       "deep-merge",
@@ -83,12 +84,61 @@ default — producing **one merged questionnaire** for the whole composition
 (detailed in §6). This is the thing copier structurally cannot do (its templates
 each keep an isolated answers file).
 
-### Referencing layers (all npm-native)
+### Referencing layers (all npm-native) **[decided]** ✅ *implemented*
 
-- **local path** — `../base` (monorepo / dev)
-- **npm package** — `@acme/base@^2`, resolved through `node_modules`. *The
-  distributable case* — overlays become versioned, shareable packages.
-- **git** — `github:acme/base#tag`
+Three origins, told apart by shape alone so nothing has to be declared twice:
+
+| Form | Example | Resolution |
+|---|---|---|
+| **local path** | `../base`, `/abs/base`, `file:./base` | as written (monorepo / dev) |
+| **git** | `git+https://host/o/r.git#v1.2.0`, `git+ssh://git@host/o/r.git#main`, `git+file:///srv/r.git#main`, `github:acme/base#v2` | cloned and pinned to a commit |
+| **npm** | `@acme/base@^2`, `pkg@1.2.3`, `npm:@acme/base@^2` | through the installed `node_modules` |
+
+Any non-local ref may carry **`?path=<subdir>`** to use a subdirectory of the
+fetched tree as the layer root — the monorepo-of-layers case
+(`git+https://…/lake.git?path=core/_layer#v3`). Order follows URL convention:
+query before fragment.
+
+**Git refs are enforced; npm refs are delegated.** A git ref names a commit, and
+treelay materializes exactly that commit from its own cache, so a build
+reproduces regardless of what has happened to the branch. An npm ref names a
+*range*, and the package on disk was put there by a package manager that already
+owns installation, integrity and an offline cache. treelay reads what is
+installed, verifies it satisfies the declared range, and records the exact
+version — it does not install, and it cannot roll a package back. Shipping a
+second, worse package manager inside a composition engine would only produce two
+lockfiles disagreeing about one tree. Reproducing an old npm pin is `npm ci`'s
+job; that asymmetry is deliberate and is the one place where "pinned" means
+*recorded* rather than *enforced*.
+
+### Vendored trees: `mounts` **[decided]** ✅ *implemented*
+
+A layer can pull an entire external tree into the composed output at a fixed
+subpath:
+
+```jsonc
+{ "mounts": { "packages": "git+https://host/acme/packages.git#v1.2.0" } }
+```
+
+Every compiled tree then carries its own `packages/` — a self-contained
+mini-monorepo where `file:`/workspace references resolve at stable internal
+paths, with no registry and no path rewriting.
+
+Mount **paths** merge across the graph by ordinary layer precedence: the highest
+layer naming `packages` decides the ref. That is the whole feature — a leaf
+holds a vendored tree back at an older pin while its parents float, using the
+same override rule as everything else rather than a bespoke package mechanism.
+
+Mounted layers sit at the **bottom** of the stack, below every declared layer.
+Vendored content is substrate: any layer must be able to patch or tombstone a
+file inside it, and that only works if the mount is beneath them all. The
+alternative — placing a mount beside its declaring layer — would make an
+intermediate layer's patch on `packages/**` apply or not depending on which
+ancestor happened to win the ref, which is exactly the unexplainable-bug-report
+outcome C3 exists to avoid. Overlapping mount paths are refused; they have no
+unambiguous owner. Mounted layers are read-only for reflux in v1: promotion maps
+an output path back to a layer path, and a mount's output paths carry a prefix
+its sources do not (§8).
 
 ---
 
@@ -111,6 +161,7 @@ surprising orders in diamonds and generates unexplainable bug reports.
 
 Final stack, lowest → highest:
 
+0. `mounts` (§2), sorted by mount path — vendored substrate
 1. linearized `parents` (C3 order)
 2. `mixins` in declaration order (each strictly above all parents)
 3. the directory's own files (always win)
@@ -118,8 +169,94 @@ Final stack, lowest → highest:
 ### Guards **[decided]**
 
 - **Cycle detection** — `A → B → A` fails loud with the full path shown.
-- **Lockfile** — `treelay.lock` records resolved lineage + content hashes for
-  reproducible builds and upstream-drift detection.
+- **Lockfile** — `treelay.lock` records what every ref resolved to, for
+  reproducible builds and upstream-drift detection (below).
+
+### `treelay.lock` **[decided]** ✅ *implemented*
+
+Committed beside the **leaf layer's manifest**. Deterministically serialized —
+sorted keys, fixed field order, two-space indent, trailing newline — so
+re-resolving an unchanged tree produces byte-identical output and never appears
+in a diff.
+
+```jsonc
+{
+  "lockfileVersion": 1,
+  "refs": {
+    "git+https://host/acme/packages.git#v1.2.0": {   // canonical ref = the key
+      "kind": "git",
+      "source": "https://host/acme/packages.git",
+      "requested": "v1.2.0",                          // the mutable thing asked for
+      "resolved": "3f2a1c9e…",                        // the immutable thing it became
+      "integrity": "sha256:…",                        // over the materialized tree
+      "path": "core/_layer",                          // ?path=, when present
+      "requestedBy": ["edo/soredi/_layer"]            // relative to the lockfile
+    }
+  }
+}
+```
+
+Four properties worth stating outright:
+
+- **The key is canonical, not textual.** `github:acme/base#v2` and
+  `git+https://github.com/acme/base.git#v2` are the same layer and share one
+  entry; the key is derived from the parsed ref, so two spellings cannot pin
+  independently.
+- **`requested` and `resolved` are both recorded.** A lock that stored only the
+  commit could say *that* something changed but never *what was asked for* — and
+  "v1.2.0 now points somewhere else" is the sentence a drift report needs.
+- **`integrity` covers content, not history.** It hashes the materialized tree
+  (`.git` and `node_modules` pruned), so a cache entry edited in place is caught
+  even though its commit id is unchanged. It is enforced only when both sides
+  claim the same revision — a *different* revision is drift, which for npm is
+  legitimate and is reported rather than mistaken for corruption.
+- **Only refs actually materialized are pinned.** A mount ref that lost the
+  precedence contest is never fetched and never appears; the lock is a record of
+  what was built, not of everything mentioned.
+
+Distinct from `<dest>/.treelay/lock.json` (§7): that file is regenerated on
+every compile and says what one *destination* was built from. `treelay.lock` is
+the pin a repository commits and reviews.
+
+**Fetching and the cache.** Fetched trees land at a path derived from what they
+are — `<cache>/git/<repo-key>/rev/<commit>/` — never from who asked. Two layers
+pinning the same commit share one checkout; a held-back pin coexists with a
+floating one instead of fighting over a working directory; and the cache is
+disposable, since the worst case is a re-fetch. Git trees are extracted with
+`git archive`, so a checkout carries no `.git` at all and cannot leak a gitlink
+into a composed tree (§4 guards the same hazard from the other side).
+`TREELAY_CACHE_DIR` relocates it.
+
+**Resolution is synchronous**, even though it may clone. Every caller in the
+library and CLI treats `resolve` as a plain function, and a build cannot proceed
+without its layers, so there is nothing to overlap with — going async would tax
+every consumer for no gain.
+
+### Drift: ref moved vs lock **[decided]** ✅ *implemented*
+
+Drift is **reported, never acted on**. `compile` and `update` materialize the
+locked revision even after `main` advances; that is what pinning means. An
+update that silently recomposed at a newer revision would make "pull my
+template's changes down" mean something different depending on the day.
+
+- `treelay lock --drift` probes each pinned ref and exits non-zero if any moved.
+- `update` prints moved refs on stderr before merging, then composes from the pins.
+- `explain` / `plan` annotate each fetched layer with the revision in use.
+- `treelay lock --update` is the *only* thing that advances a pin.
+- `--frozen-lockfile` refuses to resolve anything the lock does not already
+  pin — the CI posture: a build reproduces from what was committed, or it fails.
+
+The probe is best-effort by construction. Offline, unauthenticated, or
+uninstalled makes the current revision **unknown**, which is a distinct answer
+from "unchanged" and is presented as one — an advisory check that reported
+in-sync when it could not look would be worse than saying nothing. Annotated
+tags are peeled before comparison, or every one of them would report drift
+forever (a tag object's id is not the commit's).
+
+Absent a lock entry, the first build resolves the ref, materializes it, and
+records the pin — the package-manager convention, so day one needs no separate
+step. That write touches the *source* tree, so it is always announced rather
+than done silently.
 
 ---
 
@@ -663,6 +800,11 @@ treelay promote <dest> [files...] [--to <layer>] [--dry-run] [--no-verify]
                                #   (commit-on-branch only unless --push/--pr given)
 treelay extract <dest> [files...] --as <path> [--mixin] [--name <n>]
                                # capture edits as a NEW overlay layer
+treelay lock    [dir] [--check] [--update] [--drift]
+                               # resolve every layer ref and pin it in treelay.lock
+                               #   --check  verify it is complete + current (CI), write nothing
+                               #   --update advance moving refs to their current revision
+                               #   --drift  report refs whose upstream has moved (network)
 treelay plan    [dir]          # print linearized layer order + per-file resolution; write nothing
 treelay explain <dir> [file] [--set k=v] [--answers f] [--json]
                                # trace which layers touched a file, in order, with patches
@@ -676,6 +818,8 @@ treelay eject   <dest>         # flatten + drop .treelay state (sever the templa
 `promote` and `extract` always end with the §8 round-trip recompile-and-verify,
 and both refuse read-only or shadowed targets with a clear explanation.
 
+`compile`, `update` and `plan` all accept `--frozen-lockfile` (§3).
+
 `plan` and `explain` are not nice-to-haves — they are the debugging story for a
 system whose entire job is "this file came from somewhere non-obvious." Build
 `plan` before `compile`.
@@ -687,8 +831,14 @@ system whose entire job is "this file came from somewhere non-obvious." Build
 The CLI is a thin shell over a library (people will want this in build tools):
 
 ```ts
-const graph  = await resolve(srcDir);          // linearized layers + provenance, no output I/O
+const graph  = await resolve(srcDir, { frozen, updateRefs, noLock, cacheDir });
+// linearized layers + provenance, no output I/O
 // graph.variables = merged declaration schema across all layers (§6)
+// graph.lock / lockDirty / lockDir = pins resolved in memory (§3). Resolution
+//   never writes: `explain` must not have a lockfile as a side effect, so the
+//   caller that owns the source tree persists it.
+writeLock(graph.lockDir, graph.lock);          // what `treelay lock` does
+const drift = checkDrift(graph);               // [{ ref, requested, locked, current, status }]
 
 const values = await resolveValues(graph, { answers, set, prompt });  // §6 steps 3–4
 const result = await compile(graph, { destDir, values });
@@ -738,6 +888,14 @@ const reach = blastRadius(layerDir, { searchRoot });           // who else consu
 - **Reflux re-templatization** — store promoted edits literally vs assisted value→`{{ var }}` substitution (§8). **[open]**
 - **Git layer write-back** — git layers are writable via a working clone; reflux commits onto a branch (never a pinned ref), landing mode (commit / push / PR) chosen per promote, lockfile + project ref advanced on success. **[decided]** (§8)
 - **Template variables** — interpolate values, merged across the graph, suffix opt-in rendering. **[decided]** (§6)
+- **Layer refs & pinning** — three origins by shape, `?path=` subdirs, mounts at the
+  bottom of the stack, deterministic `treelay.lock`, drift reported not followed.
+  **[decided]** (§2, §3)
+- **npm pins are recorded, not enforced** — installation stays the package
+  manager's job; git pins *are* enforced from treelay's own cache. **[decided]** (§3)
+- **Reflux into mounted layers** — a mount's output paths carry a prefix its
+  sources do not, so promotion into one needs a path mapping that does not exist
+  yet; read-only for now. **[open]**
 - **Virtual/FUSE mode** — deferred; materialize-first is **[decided]**. Revisit later for dev loops.
 
 ---
@@ -754,8 +912,8 @@ De-risk by building resolution first, then output, then the bidirectional loops:
 6. ✅ `update` — the living-template three-way loop, reusing saved answers (pulls *down*)
 7. ✅ `explain` — per-file provenance (source layers or a compiled destination; `--json`)
 8. ✅ `status` + file-level `promote` / `extract` — reflux (pushes changes *up*)
-9. npm/git layer resolution + `treelay.lock`  ← next
-10. `watch` / `eject`
+9. ✅ npm/git layer resolution + `mounts` + `treelay.lock` (pins, drift, `--frozen-lockfile`)
+10. `watch` / `eject`  ← next
 
 Demoable and trustworthy after step 3; templated scaffolding works at step 4;
 the headline pull-down lands at step 6, and the bidirectional link closes at
