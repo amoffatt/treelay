@@ -7,6 +7,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { Command } from "commander";
 import { parse as parseYaml } from "yaml";
 import { resolve } from "./resolve.js";
@@ -20,6 +21,13 @@ import { lockfilePath, writeLock } from "./lockfile.js";
 import { checkDrift, formatDrift, hasDrift } from "./drift.js";
 import type { Values } from "./types.js";
 
+// The published version has exactly one home: package.json. `../package.json`
+// resolves to the package root from both `src/cli.ts` and the bundled
+// `dist/cli.js`, so dev and install agree without a build-time substitution.
+const { version } = createRequire(import.meta.url)("../package.json") as {
+  version: string;
+};
+
 const program = new Command();
 
 program
@@ -28,7 +36,7 @@ program
     "Compose directory trees from parents and mixins, materialize them, " +
       "and keep the output linked for two-way updates.",
   )
-  .version("0.0.0");
+  .version(version);
 
 /** Parse repeated `--set k=v` flags into an object. */
 function collectSet(value: string, previous: Record<string, string> = {}) {

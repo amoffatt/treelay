@@ -1,9 +1,26 @@
 {
   "name": "treelay",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "An inheritance/composition system for directory trees — compose templates from parents and mixins, materialize them, and keep the output linked for two-way updates.",
   "type": "module",
   "license": "MIT",
+  "author": "Aaron Moffatt <contact@aaronmoffatt.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amoffatt/treelay.git"
+  },
+  "homepage": "https://github.com/amoffatt/treelay#readme",
+  "bugs": "https://github.com/amoffatt/treelay/issues",
+  "keywords": [
+    "template",
+    "scaffolding",
+    "inheritance",
+    "composition",
+    "overlay",
+    "monorepo",
+    "boilerplate",
+    "codegen"
+  ],
   "bin": {
     "treelay": "./dist/cli.js"
   },
@@ -16,12 +33,14 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "README.md",
     "SPEC.md"
   ],
   "scripts": {
     "build": "tsup",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -31,7 +50,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@types/semver": "^7.7.1",
     "commander": "^15",
     "diff": "^9",
     "fast-glob": "^3",

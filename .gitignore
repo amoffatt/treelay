@@ -10,3 +10,6 @@ coverage/
 
 # Local IDE state (absolute paths, per-machine).
 .remade/
+
+# Local `npm pack` output.
+*.tgz
