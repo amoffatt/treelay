@@ -106,12 +106,12 @@ describe("treelay.lock — deterministic serialization", () => {
   it("sorts requestedBy, which is otherwise graph-walk order", () => {
     const lock: TreelayLock = {
       lockfileVersion: LOCKFILE_VERSION,
-      refs: { r: entry({ requestedBy: ["../state", "../core", "../edo"] }) },
+      refs: { r: entry({ requestedBy: ["../state", "../core", "../klamath"] }) },
     };
     expect(serializeLock(lock)).toContain('"../core"');
     const text = serializeLock(lock);
-    expect(text.indexOf("../core")).toBeLessThan(text.indexOf("../edo"));
-    expect(text.indexOf("../edo")).toBeLessThan(text.indexOf("../state"));
+    expect(text.indexOf("../core")).toBeLessThan(text.indexOf("../klamath"));
+    expect(text.indexOf("../klamath")).toBeLessThan(text.indexOf("../state"));
   });
 
   it("orders fields for a human reading an incident: asked, then got", () => {

@@ -93,11 +93,11 @@ merge by ordinary layer precedence, which is the point: a leaf can hold
 override rule as everything else rather than a separate package mechanism.
 
 ```console
-$ treelay plan edo/soredi/_layer
+$ treelay plan klamath/project/_layer
 Layers (lowest → highest precedence):
   1. mount:packages  [mounted at packages/, pinned 64cf108ee311]
   2. core
-  3. soredi
+  3. project
 ```
 
 Whatever gets materialized is pinned in `treelay.lock` beside the leaf manifest

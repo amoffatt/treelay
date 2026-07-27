@@ -96,7 +96,7 @@ Three origins, told apart by shape alone so nothing has to be declared twice:
 
 Any non-local ref may carry **`?path=<subdir>`** to use a subdirectory of the
 fetched tree as the layer root — the monorepo-of-layers case
-(`git+https://…/lake.git?path=core/_layer#v3`). Order follows URL convention:
+(`git+https://…/klamath.git?path=core/_layer#v3`). Order follows URL convention:
 query before fragment.
 
 **Git refs are enforced; npm refs are delegated.** A git ref names a commit, and
@@ -190,7 +190,7 @@ in a diff.
       "resolved": "3f2a1c9e…",                        // the immutable thing it became
       "integrity": "sha256:…",                        // over the materialized tree
       "path": "core/_layer",                          // ?path=, when present
-      "requestedBy": ["edo/soredi/_layer"]            // relative to the lockfile
+      "requestedBy": ["klamath/project/_layer"]       // relative to the lockfile
     }
   }
 }

@@ -1,10 +1,10 @@
 /**
- * Acceptance: the autom-lake / soredi-azure shape, end to end.
+ * Acceptance: the klamath / project-azure shape, end to end.
  *
  * This is the consumer treelay is being built against, and it exercises step 9
  * the way a real repo does rather than the way a unit test does:
  *
- *  - a four-deep layer chain, `core → edo → state → client`;
+ *  - a four-deep layer chain, `core → klamath → state → client`;
  *  - an `npm-packages` tree **mounted** into every composed build at
  *    `packages/`, fetched from git;
  *  - the leaf **holding that mount back** at an older commit while its parents
@@ -39,7 +39,7 @@ let root: string;
 let priorCache: string | undefined;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "treelay-lake-"));
+  root = mkdtempSync(join(tmpdir(), "treelay-klamath-"));
   priorCache = process.env["TREELAY_CACHE_DIR"];
   process.env["TREELAY_CACHE_DIR"] = join(root, "cache");
 });
@@ -64,26 +64,26 @@ function packagesRemote(): { repo: Repo; held: string } {
 }
 
 /**
- * The core → edo → state → client chain.
+ * The core → klamath → state → client chain.
  *
  * `state` floats the packages mount on `main`; `client` (the leaf) holds the
  * same mount path back at `held`. Mount paths merge by ordinary precedence, so
  * the leaf's ref is the one that gets fetched.
  */
-function lakeLayers(repo: Repo, held: string): string {
+function klamathLayers(repo: Repo, held: string): string {
   writeTree(join(root, "core"), {
     "treelay.json": manifest({ name: "core" }),
     "config.json": JSON.stringify({ tier: "core", telemetry: true }, null, 2) + "\n",
     "core-only.txt": "core\n",
   });
-  writeTree(join(root, "edo"), {
-    "treelay.json": manifest({ name: "edo", parents: ["../core"] }),
-    "config.json": JSON.stringify({ tier: "edo" }, null, 2) + "\n",
+  writeTree(join(root, "klamath"), {
+    "treelay.json": manifest({ name: "klamath", parents: ["../core"] }),
+    "config.json": JSON.stringify({ tier: "klamath" }, null, 2) + "\n",
   });
   writeTree(join(root, "state"), {
     "treelay.json": manifest({
       name: "state",
-      parents: ["../edo"],
+      parents: ["../klamath"],
       mounts: { packages: gitRef(repo, "main") },
     }),
     "config.json": JSON.stringify({ region: "westeurope" }, null, 2) + "\n",
@@ -98,10 +98,10 @@ function lakeLayers(repo: Repo, held: string): string {
   });
 }
 
-describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mount", () => {
+describe.skipIf(!LIVE)("acceptance — the klamath layer chain with a held-back mount", () => {
   it("vendors the leaf's pin, not the floating one its parent asked for", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     const dest = join(leaf, "build");
 
     await compile(resolveWith(leaf), { destDir: dest });
@@ -117,7 +117,7 @@ describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mou
 
   it("records exactly the vendored revision in treelay.lock", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     await compile(resolveWith(leaf), { destDir: join(leaf, "build") });
 
     const lock = readLock(leaf);
@@ -131,7 +131,7 @@ describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mou
 
   it("keeps composing the held revision after the branch moves on", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     await compile(resolveWith(leaf), { destDir: join(leaf, "build") });
 
     repo.commit({ "core-utils/index.ts": "export const VERSION = 3;\n" });
@@ -148,7 +148,7 @@ describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mou
     // The fetch cache holds real checkouts, so this is the path where it would
     // most plausibly slip through.
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     const dest = join(leaf, "build");
 
     await compile(resolveWith(leaf), { destDir: dest });
@@ -159,7 +159,7 @@ describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mou
 
   it("composes the chain itself in C3 order, leaf last", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     const dest = join(leaf, "build");
 
     await compile(resolveWith(leaf), { destDir: dest });
@@ -174,11 +174,11 @@ describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mou
   });
 
   it("compiles into a build/ directory inside the source repo without self-inclusion", async () => {
-    // How the lake actually builds: `build/` is gitignored and lives in the
+    // How klamath actually builds: `build/` is gitignored and lives in the
     // repo being composed. The destination is pruned from its own layer walk
     // (§7), so recompiling never vendors the previous run's output.
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     const dest = join(leaf, "build");
 
     await compile(resolveWith(leaf), { destDir: dest });
@@ -195,11 +195,11 @@ describe.skipIf(!LIVE)("acceptance — the lake layer chain with a held-back mou
     // §7 prunes the destination currently being written. A build directory
     // left over from an earlier run is, to any other compile, just files in
     // the layer — so a project that builds to more than one place (CI and
-    // local, say) has to say `ignore: ["build/**"]`. Pinned here because the
-    // lake compiles inside its own source repo and would otherwise ship a
+    // local, say) has to say `ignore: ["build/**"]`. Pinned here because
+    // klamath compiles inside its own source repo and would otherwise ship a
     // stale copy of itself.
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     writeTree(leaf, {
       "treelay.json": manifest({
         name: "client",
@@ -223,7 +223,7 @@ describe.skipIf(!LIVE)("acceptance — a mount is substrate, not a sealed unit",
     // sat beside their declaring layer, whether this append applied would
     // depend on which ancestor won the ref.
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     writeTree(leaf, {
       "packages/core-utils/index.ts.append": "export const PATCHED = true;\n",
     });
@@ -238,7 +238,7 @@ describe.skipIf(!LIVE)("acceptance — a mount is substrate, not a sealed unit",
 
   it("lets a layer above the mount tombstone a vendored file", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     writeTree(leaf, { "packages/legacy/index.ts.delete": "" });
 
     const dest = join(leaf, "build");
@@ -250,7 +250,7 @@ describe.skipIf(!LIVE)("acceptance — a mount is substrate, not a sealed unit",
 
   it("marks the mount read-only and attributes its files to it", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
 
     const graph = resolveWith(leaf);
     const mount = graph.layers.find((l) => l.mountPath === "packages");
@@ -266,7 +266,7 @@ describe.skipIf(!LIVE)("acceptance — a mount is substrate, not a sealed unit",
 
   it("records the mount in the destination's lineage", async () => {
     const { repo, held } = packagesRemote();
-    const leaf = lakeLayers(repo, held);
+    const leaf = klamathLayers(repo, held);
     const dest = join(leaf, "build");
     await compile(resolveWith(leaf), { destDir: dest });
 

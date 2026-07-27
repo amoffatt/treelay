@@ -83,7 +83,7 @@ export class SelfCompileError extends Error {
  * Extra ignore globs so a destination nested *inside* a layer never feeds its
  * own prior output back into the composition (§7).
  *
- * The autom-lake shape — compiling into a gitignored `build/` inside the source
+ * The klamath shape — compiling into a gitignored `build/` inside the source
  * repo — is explicitly supported: a destination that is a strict descendant of
  * a layer is pruned from that layer's walk. A destination that *is* the layer
  * root is rejected via {@link SelfCompileError}.

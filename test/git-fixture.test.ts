@@ -77,7 +77,7 @@ describe.skipIf(!HAS_GIT)("git fixture harness", () => {
   });
 
   it("produces a gitlink FILE, not a directory, for a submodule checkout", () => {
-    // The autom-lake shape (an npm-packages submodule vendored into the tree)
+    // The klamath shape (an npm-packages submodule vendored into the tree)
     // and the reason SPEC §4 excludes `.git` in both forms. Asserted here so
     // the robustness suite's hand-written gitlink fixture stays faithful to
     // what git actually writes.

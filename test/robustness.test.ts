@@ -1,5 +1,5 @@
 /**
- * Consumer-driven robustness — shapes the autom-lake / soredi-azure restructure
+ * Consumer-driven robustness — shapes the klamath / project-azure restructure
  * puts treelay through that the unit tests do not:
  *
  *  a. layers vendored as **git submodule checkouts** (a `.git` *file*, not dir)
@@ -54,7 +54,7 @@ describe("robustness — .git is never composed (§4 built-in tombstone)", () =>
   });
 
   it("excludes a submodule gitlink FILE nested inside a vendored directory", async () => {
-    // The autom-lake shape: an npm-packages submodule vendored into the tree.
+    // The klamath shape: an npm-packages submodule vendored into the tree.
     const leaf = layer("leaf", {
       "vendor/npm-packages/.git": "gitdir: ../../.git/modules/npm-packages\n",
       "vendor/npm-packages/package.json": JSON.stringify({ name: "vendored" }),
@@ -114,7 +114,7 @@ describe("robustness — .git is never composed (§4 built-in tombstone)", () =>
 
 describe("robustness — destination nested inside the source tree (§7)", () => {
   it("does not re-consume its own output when dest is a descendant of the leaf", async () => {
-    // autom-lake compiles into a gitignored build/ *inside* the source repo.
+    // klamath compiles into a gitignored build/ *inside* the source repo.
     // The first compile is safe by construction (enumeration precedes writing);
     // the second is where self-inclusion would bite.
     const leaf = layer("leaf", { "a.txt": "a", "nested/b.txt": "b" });
