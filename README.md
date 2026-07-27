@@ -33,7 +33,10 @@ See [SPEC.md §1](./SPEC.md) for the full comparison.
 ## Core ideas
 
 - **Composition graph** — `parents` (transitive, C3-linearized) and `mixins`,
-  with precedence `mounts < parents < mixins < self`.
+  with precedence `mounts < parents < mixins < self`. Mixins carry their own
+  parents in with them. Note the two lists run opposite ways: the *first*
+  parent declared outranks the rest (Python's C3), while the *last* mixin
+  declared wins.
 - **Distributable layers** — a parent, mixin or mount can be a local path, a git
   ref, or an npm package. Whatever a build resolves is pinned in `treelay.lock`,
   so the next build reproduces it and an upstream that has moved is *reported*

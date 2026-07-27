@@ -76,9 +76,25 @@ export function resolve(srcDir: string, options: ResolveOptions = {}): ResolvedG
   const parentsLowToHigh = mro.slice(1).reverse();
 
   // Mixins sit strictly above all parents, in declaration order (last = highest).
-  // NOTE: a mixin's own parents are not yet flattened into the stack — TODO once
-  // nested-mixin composition is specced out.
-  const mixins = (self.manifest.mixins ?? []).map((ref) => loadRef(ctx, ref, self));
+  // Each mixin's own ancestry is C3-linearized and placed directly beneath it,
+  // so a mixin built on a shared base contributes that base too — without it,
+  // the base is silently absent and the composition is quietly wrong (§3).
+  const mixinGroups = (self.manifest.mixins ?? []).flatMap((ref) => {
+    const mixin = loadRef(ctx, ref, self);
+    // [mixin, ...ancestorsHighToLow] → [ancestorsLowToHigh..., mixin]
+    return c3Linearize(mixin, parentsOf, (l) => l.id).reverse();
+  });
+
+  // A layer already present keeps its first (lowest) position. Re-inserting it
+  // higher would let it override layers it is meant to sit beneath, which is
+  // the same reasoning the diamond rule rests on.
+  const placed = new Set([self.id, ...parentsLowToHigh.map((l) => l.id)]);
+  const mixins: Layer[] = [];
+  for (const layer of mixinGroups) {
+    if (placed.has(layer.id)) continue;
+    placed.add(layer.id);
+    mixins.push(layer);
+  }
 
   const declared = [...parentsLowToHigh, ...mixins, self];
   const mounts = resolveMounts(ctx, declared);

@@ -166,6 +166,24 @@ Final stack, lowest → highest:
 2. `mixins` in declaration order (each strictly above all parents)
 3. the directory's own files (always win)
 
+The two lists run in opposite directions, which is worth stating plainly:
+`parents` follows Python, so the **first**-declared base is the most derived and
+outranks the ones after it; `mixins` are layered on in order, so the **last**
+one declared wins. Parents answer "what am I a specialization of" (earlier =
+closer to you); mixins answer "what is layered on top" (later = on top).
+
+### Mixin ancestry **[decided]** ✅ *implemented*
+
+A mixin may declare `parents` of its own. Each mixin's ancestry is C3-linearized
+and placed **directly beneath that mixin**, while the whole group stays above
+every one of the leaf's parents — so `parents < mixins < self` still holds when
+read as groups rather than individual layers.
+
+A layer that already appears lower in the stack keeps its position rather than
+being re-inserted beneath its mixin. This is the diamond rule again: a shared
+ancestor applies once, at its lowest position, because promoting it upward would
+let it override the very layers it is supposed to sit beneath.
+
 ### Guards **[decided]**
 
 - **Cycle detection** — `A → B → A` fails loud with the full path shown.
