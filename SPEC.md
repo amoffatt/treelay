@@ -376,9 +376,25 @@ and writes the flattened result to `destDir`. The destination gets a state dir:
 <destDir>/.treelay/
   lock.json          # resolved lineage + version refs at last compile
   answers.json       # resolved variable values (§6); secrets excluded
-  baseline.json      # relative path → content hash of every generated file = the merge base
+  baseline.json      # relative path → content hash of every generated file
+  baseline/          # the generated content itself = the diff3 merge base
   manifest.json      # per file: generated-by-template | user-owned, + producing layer
 ```
+
+**Why both a hash index and a content snapshot.** They answer different
+questions. The hash cheaply decides *whether* a file changed, which is all the
+first two merge cases below need. But a hash cannot reconstruct the text diff3
+requires as its merge base, so "both sides changed" — the case the whole feature
+exists for — needs the content itself. (Same lesson as `base` vs `baseContent`
+in §5; a digest detects drift, it never reverses it.) The snapshot is replaced
+wholesale on each write so files the template no longer produces cannot linger
+as stale merge bases, and reads are verified against the recorded hash: a
+snapshot that has fallen out of sync degrades to "no base available", which
+surfaces as a conflict rather than a silently wrong merge.
+
+`lock.json`'s lineage doubles as the pointer home — its last entry is the leaf,
+which is how `treelay update <dest>` rediscovers the template it came from
+without being told.
 
 First compile = fresh instantiation. The baseline records "this is exactly what
 the template produced *with these answers*," which is what later updates merge
@@ -400,10 +416,10 @@ The degenerate case fails loud rather than silently eating its own sources:
 `destDir` **equal to** a layer root is refused, because materializing over the
 directory being read has no correct interpretation.
 
-### Update (re-pull template changes into an edited project)
+### Update (re-pull template changes into an edited project) ✅ *implemented*
 
 ```
-treelay update <destDir>
+treelay update <destDir> [--set k=v] [--on-conflict markers|rej] [--dry-run]
 ```
 
 Update first reloads `answers.json`, prompts **only for variables the new
@@ -414,17 +430,49 @@ re-asked), then recompiles. Three inputs, per file:
 - **ours**  = current working copy in `destDir` (user's edits)
 - **theirs**= freshly recompiled template at the new version, same answers
 
+Crucially, `theirs` is composed **in memory**. Recompiling onto the destination
+would destroy the very edits the merge exists to preserve.
+
 Per-file three-way merge:
 
 - base == ours  → take theirs (user never touched it; accept update cleanly)
 - base == theirs→ keep ours  (template unchanged; preserve user edits)
 - both changed, mergeable → merge (structured merge for JSON/YAML; 3-way text merge otherwise)
-- both changed, conflicting → write conflict markers / surface for resolution
+- both changed, conflicting → surface for resolution (see below)
 - file gone in theirs, unchanged in ours → delete it
 - file gone in theirs, edited in ours → conflict (don't silently discard user work)
+- file gone in ours, unchanged in theirs → stay deleted (a deletion is an edit too)
+- file gone in ours, changed in theirs → conflict (don't silently resurrect it)
+- file new in theirs, already present in ours → conflict (the user got there first)
 
-After a clean/resolved update, the baseline is rewritten to the new template
-output, so the next update merges against the right base.
+**Text first, then structure.** For JSON/YAML the line merge is tried *before*
+the structured one, because it preserves formatting and comments. Only when it
+conflicts do we retry as merge patches, where two sides adding unrelated keys
+compose cleanly however adjacent those keys happen to be — the `package.json`
+case. The cost is reserialization, which is why it is the fallback and not the
+default.
+
+**Conflicts are written, not thrown.** Unlike compile (§5), which can safely
+refuse to produce anything, `update` is editing a project that already exists —
+doing nothing leaves the user stuck. So conflicts are reported in the plan and
+materialized one of two ways:
+
+- **`markers`** (default) — the merged file carries diff3 markers, *including the
+  base section*, so you can see what the template previously produced rather than
+  guessing why the two sides disagree.
+- **`rej`** — the working file is left byte-identical and the incoming version
+  lands at `<file>.rej`. For projects where a file must stay parseable (a
+  committed lockfile, anything a pre-commit hook reads) markers are worse than
+  useless.
+
+Either way the *whole plan is computed before anything is written*, so a failure
+partway through leaves the project exactly as it was — the same all-or-nothing
+guarantee compile makes, applied to a tree that already has work in it.
+
+The baseline is then rewritten to the new template output **unconditionally**,
+including for conflicted files: "what the template last produced" is factually
+`theirs` regardless of how each merge landed. This is what makes a repeated
+update a no-op, and stops a conflict from being re-offered on every future run.
 
 ### Generated vs owned files
 
@@ -634,11 +682,14 @@ await extract(destDir, changes, { as: path, asMixin: true });
 
 - **Array merge default** — `replace` proposed; revisit if config use cases want `by-key`. **[open]**
 - **What's tracked** — contents always; modes + symlinks proposed yes; empty dirs only via `.keep`. **[open]**
-- **Conflict UX** — split by direction. For **compile** it is **[decided]**: fail
-  the build, write nothing (§5) — a template that can't compose has no partial
-  output worth keeping. For **update**, where the user's own edits are at stake
-  and failing means doing nothing, the presentation is still **[open]**:
-  git-style inline markers vs a `.rej`-style sidecar vs an interactive resolver.
+- **Conflict UX** — **[decided]**, split by direction. For **compile**: fail the
+  build, write nothing (§5) — a template that can't compose has no partial output
+  worth keeping. For **update**: write the conflict, since refusing to act on a
+  project that already exists just leaves the user stuck. Both presentations ship
+  because neither dominates — inline `markers` (diff3 style, base section shown)
+  by default, `rej` sidecars when a file has to stay parseable (§7). An
+  interactive resolver is deferred; it composes on top of either mode rather
+  than replacing them.
 - **Reflux granularity** — file-level for v1; hunk-level splitting + auto-`absorb` routing deferred to v2. **[open]**
 - **Template engine** — **LiquidJS [decided]** (safe, sandboxed; over Nunjucks/Eta) — see §6.
 - **Reflux re-templatization** — store promoted edits literally vs assisted value→`{{ var }}` substitution (§8). **[open]**
@@ -657,7 +708,7 @@ De-risk by building resolution first, then output, then the bidirectional loops:
 3. ✅ `compile` to a destination (fresh instantiation + `.treelay` state)
 4. ✅ Variable schema merge + value resolution + suffix-opt-in rendering (§6)
 5. ✅ Unified-diff patches with 3-way merge (`.patch` suffix, sidecar `op: patch`, `patch` merge glob)
-6. `update` — the living-template three-way loop, reusing saved answers (pulls *down*) ← next
+6. ✅ `update` — the living-template three-way loop, reusing saved answers (pulls *down*)
 7. ✅ `explain` — per-file provenance (source layers or a compiled destination; `--json`)
 8. `status` + file-level `promote` / `extract` — reflux (pushes changes *up*)
 9. npm/git layer resolution + `treelay.lock`

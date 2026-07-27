@@ -14,7 +14,8 @@ import { resolveValues } from "./variables.js";
 import { compile } from "./compile.js";
 import { update, planUpdate } from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
-import { hasState } from "./state.js";
+import { status, promote, extract, formatStatus } from "./reflux.js";
+import { hasState, readState, sourceOf } from "./state.js";
 import type { Values } from "./types.js";
 
 const program = new Command();
@@ -110,13 +111,7 @@ program
         dryRun?: boolean;
       },
     ) => {
-      if (!hasState(dest)) {
-        console.error(
-          `treelay update: ${dest} has no .treelay state — it was not created ` +
-            `by treelay. Use \`treelay compile <src> ${dest}\` first.`,
-        );
-        process.exit(2);
-      }
+      requireState(dest, "update");
       if (opts.onConflict !== "markers" && opts.onConflict !== "rej") {
         console.error(
           `treelay update: --on-conflict expects "markers" or "rej", got "${opts.onConflict}"`,
@@ -175,21 +170,98 @@ program
     },
   );
 
+/** Load a destination's changes, narrowed to `files` when any were named. */
+async function changesFor(dest: string, files: string[]) {
+  requireState(dest, "status");
+  const all = await status(dest);
+  if (!files.length) return all;
+
+  const selected = all.filter((c) => files.includes(c.path));
+  const missing = files.filter((f) => !all.some((c) => c.path === f));
+  if (missing.length) {
+    console.error(
+      `No change recorded for: ${missing.join(", ")}\n` +
+        `Run \`treelay status ${dest}\` to see what diverged from the baseline.`,
+    );
+    process.exit(2);
+  }
+  return selected;
+}
+
+/** Exit with guidance when a directory carries no treelay state. */
+function requireState(dest: string, cmd: string): void {
+  if (hasState(dest)) return;
+  console.error(
+    `treelay ${cmd}: ${dest} has no .treelay state — it was not created by ` +
+      `treelay. Use \`treelay compile <src> ${dest}\` first.`,
+  );
+  process.exit(2);
+}
+
 program
   .command("status")
   .argument("<dest>", "destination directory")
+  .option("--json", "emit machine-readable JSON")
   .description("list changes vs baseline, annotated with producing layer")
-  .action(() => notImplemented("status"));
+  .action(async (dest: string, opts: { json?: boolean }) => {
+    requireState(dest, "status");
+    const changes = await status(dest);
+    if (opts.json) {
+      console.log(JSON.stringify(changes, null, 2));
+      return;
+    }
+    const state = readState(dest);
+    const src = sourceOf(state);
+    console.log(formatStatus(changes, resolve(src!)));
+  });
 
 program
   .command("promote")
   .argument("<dest>", "destination directory")
   .argument("[files...]", "files to promote")
   .option("--to <layer>", "target layer (auto-suggested if omitted)")
-  .option("--interactive", "choose a target per change")
+  .option("--no-verify", "skip the round-trip recompile check (§8 guard 2)")
   .option("--dry-run", "show what each target would gain; write nothing")
   .description("push instance edits up into a layer")
-  .action(() => notImplemented("promote"));
+  .action(
+    async (
+      dest: string,
+      files: string[],
+      opts: { to?: string; verify?: boolean; dryRun?: boolean },
+    ) => {
+      const changes = await changesFor(dest, files);
+      if (!changes.length) {
+        console.log("Nothing to promote — no changes vs baseline.");
+        return;
+      }
+
+      if (opts.dryRun) {
+        console.log(
+          `Would promote ${changes.length} change(s)${opts.to ? ` into ${opts.to}` : ""}:`,
+        );
+        for (const c of changes) console.log(`  ${c.kind.padEnd(8)} ${c.path}`);
+        return;
+      }
+
+      const result = await promote(dest, changes, {
+        ...(opts.to ? { to: opts.to } : {}),
+        verify: opts.verify !== false,
+      });
+
+      console.log(`Promoted into ${result.targetName}:`);
+      for (const l of result.landed) {
+        console.log(`  ${l.mode.padEnd(9)} ${l.path}  → ${l.wrote}`);
+      }
+      console.log(
+        result.verified
+          ? "Round-trip verified: the destination reproduces from the template."
+          : "Round-trip verification skipped (--no-verify).",
+      );
+      // Guard 3 is advisory, but it is the one with consequences for other
+      // people, so it goes to stderr where it will not be piped away silently.
+      console.error(`\n${result.blastRadiusWarning}`);
+    },
+  );
 
 program
   .command("extract")
@@ -197,8 +269,39 @@ program
   .argument("[files...]", "files to extract")
   .requiredOption("--as <path>", "path for the new overlay layer")
   .option("--mixin", "wire the new layer in as a mixin")
+  .option("--name <name>", "name for the new layer's manifest")
   .description("capture instance edits as a new overlay layer")
-  .action(() => notImplemented("extract"));
+  .action(
+    async (
+      dest: string,
+      files: string[],
+      opts: { as: string; mixin?: boolean; name?: string },
+    ) => {
+      const changes = await changesFor(dest, files);
+      if (!changes.length) {
+        console.log("Nothing to extract — no changes vs baseline.");
+        return;
+      }
+
+      const result = await extract(dest, changes, {
+        as: opts.as,
+        ...(opts.mixin ? { asMixin: true } : {}),
+        ...(opts.name ? { name: opts.name } : {}),
+      });
+
+      console.log(`Extracted ${result.files.length} file(s) → ${result.layer}`);
+      for (const f of result.files) console.log(`  ${f}`);
+      if (result.wired) {
+        console.log(`Wired in as a mixin of the leaf; round-trip verified.`);
+      } else {
+        console.error(
+          `\nThe new layer is not wired into the graph, so these edits are still ` +
+            `local. Add "${opts.as}" to the leaf's parents or mixins (or re-run ` +
+            `with --mixin) to make them inherited.`,
+        );
+      }
+    },
+  );
 
 program
   .command("explain")

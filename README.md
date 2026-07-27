@@ -8,13 +8,13 @@ be pulled into an already-created, already-edited project (`update`), and local
 edits can be pushed back up into the layers they belong to (`promote`).
 
 > **Status: early, working.** The architecture and full design are specified in
-> [SPEC.md](./SPEC.md). Resolution (C3), value resolution, and **`compile`** are
-> implemented and tested — you can materialize a real, composed project today,
-> with rendering, deep-merge, append/prepend, tombstones, sidecar/suffix ops,
+> [SPEC.md](./SPEC.md). Resolution (C3), value resolution, **`compile`**, and
+> **`update`** are implemented and tested — you can materialize a real, composed
+> project today and then pull template changes back into it after you have edited
+> it, with rendering, deep-merge, append/prepend, tombstones, sidecar/suffix ops,
 > **unified-diff patches with true 3-way merge**, `.treelay` state, and
-> **`explain`** for tracing where any file came from. The bidirectional loop
-> (`update` down, `promote`/`extract` up) is the next stub in the SPEC §12
-> build order.
+> **`explain`** for tracing where any file came from. Remaining per SPEC §12: npm
+> and git layer refs, `watch`, and `eject`.
 
 ## Why not just OverlayFS / copier / Kustomize?
 
@@ -43,18 +43,59 @@ See [SPEC.md §1](./SPEC.md) for the full comparison.
   content is rendered (LiquidJS, sandboxed). Suffix opt-in (`*.tmpl`).
 - **Two-way link** — `update` pulls template changes down; `promote`/`extract`
   push instance edits up.
+- **Living updates** — `update` merges the new template output against what it
+  produced last time and what you have since edited. Your changes survive; files
+  you never touched advance cleanly; genuine collisions surface as conflicts
+  rather than being guessed at.
 
-## CLI (planned surface)
+## CLI
 
 ```
 treelay compile <src> <dest>   # materialize template → destination
 treelay update  <dest>         # pull template changes down (3-way merge)
+                               #   --on-conflict markers|rej  --dry-run
 treelay status  <dest>         # list local changes vs baseline
 treelay promote <dest> --to <layer>   # push edits up into a layer
 treelay extract <dest> --as <path>    # capture edits as a new layer
 treelay plan    [dir]          # print the linearized layer order
 treelay explain <dir> [file]   # trace file provenance (--json for machine output)
 ```
+
+### Pulling template changes into a project you've edited
+
+This is the headline: a compiled project stays linked to its template, so the
+template can keep evolving after the project exists.
+
+```console
+$ treelay update ./my-service
+New variables: region
+  U  .github/workflows/ci.yml      # you never touched it — updated cleanly
+  M  pipeline.yml                  # both changed, merged
+  D  legacy.cfg                    # template dropped it, you hadn't edited it
+  … 2 file(s) with local edits left as-is.
+```
+
+Update reloads the answers it was built with and asks **only** about variables
+the new template version introduced. Files you created yourself are never
+touched. Genuine collisions are reported and written as conflicts rather than
+guessed at — and `update` exits non-zero so CI notices:
+
+```console
+$ treelay update ./my-service --on-conflict rej
+  C  pipeline.yml  ← conflict
+
+1 conflict(s). Your files are unchanged; incoming versions are in *.rej.
+```
+
+`--on-conflict markers` (the default) writes diff3 markers in place, including
+the base section so you can see what the template *used* to produce. `rej` keeps
+the working file byte-identical and drops the incoming version at `<file>.rej` —
+use it when a file has to stay parseable. `--dry-run` shows the plan and writes
+nothing.
+
+Run it twice and the second run is a no-op; the baseline advances to whatever
+the template produced, so a conflict is never re-offered once you've dealt with
+it.
 
 ### Tracing where a file came from
 
