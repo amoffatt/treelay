@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+coverage/
+
+# Compiled-destination state (§7). Only ever appears in outputs, never in
+# layer sources — `<file>.treelay` sidecars are files, so they stay tracked.
+.treelay/
+
+# Local IDE state (absolute paths, per-machine).
+.remade/

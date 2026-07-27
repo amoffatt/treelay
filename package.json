@@ -1,0 +1,51 @@
+{
+  "name": "treelay",
+  "version": "0.0.0",
+  "description": "An inheritance/composition system for directory trees — compose templates from parents and mixins, materialize them, and keep the output linked for two-way updates.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "treelay": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SPEC.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^15",
+    "diff": "^9",
+    "fast-glob": "^3",
+    "fast-json-patch": "^3",
+    "json-merge-patch": "^1",
+    "liquidjs": "^10",
+    "node-diff3": "^3",
+    "picomatch": "^4",
+    "yaml": "^2"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "@types/picomatch": "^4.0.3",
+    "tsup": "^8",
+    "typescript": "^6",
+    "vitest": "^4"
+  }
+}
