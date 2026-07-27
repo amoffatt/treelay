@@ -6,7 +6,13 @@
  * the baseline (merge base for update & reflux), and the generated/owned map.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { ResolvedGraph, VariableDecl, Values } from "./types.js";
 
@@ -22,7 +28,11 @@ export interface TreelayState {
 }
 
 export interface LockFile {
-  /** Layer ids/refs lowest → highest precedence at last compile. */
+  /**
+   * Layer ids/refs lowest → highest precedence at last compile. The last entry
+   * is the leaf — this is how `update <dest>` rediscovers its source template
+   * without being told where it came from.
+   */
   lineage: string[];
   /** Resolved version refs per layer (npm/git), for drift detection. */
   versions: Record<string, string>;
@@ -33,8 +43,18 @@ export const statePaths = (destDir: string) => ({
   lock: join(destDir, STATE_DIR, "lock.json"),
   answers: join(destDir, STATE_DIR, "answers.json"),
   baseline: join(destDir, STATE_DIR, "baseline.json"),
+  /** Content snapshot of the last template output — the diff3 merge base (§7). */
+  baselineDir: join(destDir, STATE_DIR, "baseline"),
   manifest: join(destDir, STATE_DIR, "manifest.json"),
 });
+
+/**
+ * The leaf template a destination was compiled from, recovered from the lock.
+ * Returns undefined for a lockfile with no lineage (nothing to update against).
+ */
+export function sourceOf(state: TreelayState): string | undefined {
+  return state.lock.lineage[state.lock.lineage.length - 1];
+}
 
 /** Whether a destination already carries treelay state (⇒ `update`, not compile). */
 export function hasState(destDir: string): boolean {
@@ -57,11 +77,21 @@ function stripSecrets(
   return out;
 }
 
-/** Persist the four state artifacts into `<destDir>/.treelay/`. */
+/**
+ * Persist the state artifacts into `<destDir>/.treelay/`.
+ *
+ * `snapshot` is the exact content the template just produced. It is stored
+ * alongside the hash index because the two answer different questions: the hash
+ * cheaply decides *whether* a file changed, but only the content can serve as
+ * the merge base when both the template and the user changed it (§7). Passing
+ * it replaces any previous snapshot wholesale, so files the template no longer
+ * produces don't linger as stale merge bases.
+ */
 export function writeState(
   destDir: string,
   state: TreelayState,
   decls: Record<string, VariableDecl>,
+  snapshot?: ReadonlyMap<string, Buffer>,
 ): void {
   const paths = statePaths(destDir);
   mkdirSync(paths.dir, { recursive: true });
@@ -70,6 +100,27 @@ export function writeState(
   writeFileSync(paths.answers, json(stripSecrets(state.answers, decls)));
   writeFileSync(paths.baseline, json(state.baseline));
   writeFileSync(paths.manifest, json(state.manifest));
+
+  if (snapshot) {
+    rmSync(paths.baselineDir, { recursive: true, force: true });
+    for (const [rel, data] of snapshot) {
+      const abs = join(paths.baselineDir, rel);
+      ensureDir(abs);
+      writeFileSync(abs, data);
+    }
+  }
+}
+
+/**
+ * Read one file's baseline content — the merge base for `update` (§7).
+ * Undefined when the destination predates snapshotting or never had the file.
+ */
+export function readBaselineFile(
+  destDir: string,
+  rel: string,
+): Buffer | undefined {
+  const abs = join(statePaths(destDir).baselineDir, rel);
+  return existsSync(abs) ? readFileSync(abs) : undefined;
 }
 
 /** Read back persisted state (used by update/status/reflux). */

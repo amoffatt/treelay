@@ -17,8 +17,57 @@
  */
 
 import { applyPatch, parsePatch } from "diff";
-import { merge as diff3 } from "node-diff3";
+import { merge as diff3, mergeDiff3 } from "node-diff3";
 import { MergeConflictError } from "../errors.js";
+
+/** Default conflict-marker labels, phrased for the `update` direction (§7). */
+export const MERGE_LABELS = {
+  ours: "ours (your edits)",
+  base: "base (last template output)",
+  theirs: "theirs (new template)",
+} as const;
+
+export interface TextMerge3Args {
+  /** Common ancestor both sides diverged from. */
+  base: string;
+  /** The local side — kept first in conflict markers, as git does. */
+  ours: string;
+  /** The incoming side. */
+  theirs: string;
+  labels?: { ours: string; base: string; theirs: string };
+}
+
+export interface TextMerge3Result {
+  /** False when the two sides edited the same region. */
+  clean: boolean;
+  /** Merged text; carries diff3-style conflict markers when `clean` is false. */
+  text: string;
+}
+
+/**
+ * Three-way merge of raw text — the same diff3 engine `applyPatch3Way` uses,
+ * exposed directly for `update`, which already holds all three versions and has
+ * no patch to apply.
+ *
+ * Conflicts are *returned*, not thrown: unlike compile, `update` has to write
+ * something (markers or a `.rej`) so the user can resolve it in place.
+ * Markers include the base section, so you can see what the template previously
+ * produced rather than guessing why the two sides disagree.
+ */
+export function mergeText3(args: TextMerge3Args): TextMerge3Result {
+  const { base, ours, theirs, labels = MERGE_LABELS } = args;
+  if (ours === theirs) return { clean: true, text: ours };
+  if (ours === base) return { clean: true, text: theirs };
+  if (theirs === base) return { clean: true, text: ours };
+
+  const merged = mergeDiff3(toLines(ours), toLines(base), toLines(theirs), {
+    label: { a: labels.ours, o: labels.base, b: labels.theirs },
+  });
+  return {
+    clean: !merged.conflict,
+    text: fromLines(merged.result as string[]),
+  };
+}
 
 export interface Patch3WayArgs {
   /** Relative path, for error messages. */

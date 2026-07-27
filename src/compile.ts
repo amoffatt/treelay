@@ -50,8 +50,11 @@ export interface CompileOptions {
 }
 
 
-/** One accumulated output file as it builds up across the layer stack. */
-interface FileEntry {
+/**
+ * One accumulated output file as it builds up across the layer stack. Also the
+ * public shape of an in-memory composition (see {@link composeFiles}).
+ */
+export interface FileEntry {
   data: Buffer;
   strategy: MergeStrategy;
   fromLayer: string;
@@ -78,27 +81,40 @@ function needsRender(s: string): boolean {
   return s.includes("{{") || s.includes("{%");
 }
 
-/** Materialize a resolved graph into a destination directory. */
-export async function compile(
+/**
+ * Compose a graph into an in-memory file map, writing nothing.
+ *
+ * This is the whole pipeline minus materialization, split out because `update`
+ * (§7) needs the *would-be* output to merge against a project that already
+ * exists — recompiling straight onto disk would destroy the very edits it is
+ * trying to preserve.
+ *
+ * `destDir` is only used to prune a destination nested inside the source tree,
+ * so a compose is safe to run with the real destination path.
+ */
+export async function composeFiles(
   graph: ResolvedGraph,
-  options: CompileOptions,
-): Promise<CompileResult> {
-  const values = options.values ?? {};
+  values: Values = {},
+  destDir?: string,
+): Promise<Map<string, FileEntry>> {
   const acc = new Map<string, FileEntry>();
-
   for (const layer of graph.layers) {
-    await applyLayer(layer, acc, values, options.destDir);
+    await applyLayer(layer, acc, values, destDir);
   }
+  return acc;
+}
 
-  // Materialize + collect provenance and baseline.
+/** Provenance + baseline bookkeeping derived from a composition. */
+export function summarize(acc: ReadonlyMap<string, FileEntry>): {
+  result: CompileResult;
+  baseline: Record<string, string>;
+  manifest: TreelayState["manifest"];
+} {
   const result: CompileResult = { files: {} };
   const baseline: Record<string, string> = {};
   const manifest: TreelayState["manifest"] = {};
 
   for (const [rel, entry] of acc) {
-    const abs = join(options.destDir, rel);
-    ensureDir(abs);
-    writeFileSync(abs, entry.data);
     result.files[rel] = {
       fromLayer: entry.fromLayer,
       strategy: entry.strategy,
@@ -108,6 +124,28 @@ export async function compile(
     baseline[rel] = hashContent(entry.data);
     manifest[rel] = { owned: false, fromLayer: entry.fromLayer };
   }
+  return { result, baseline, manifest };
+}
+
+/** Materialize a resolved graph into a destination directory. */
+export async function compile(
+  graph: ResolvedGraph,
+  options: CompileOptions,
+): Promise<CompileResult> {
+  const values = options.values ?? {};
+  const acc = await composeFiles(graph, values, options.destDir);
+
+  // Compose fully before writing anything: a conflict partway through must not
+  // leave a half-built destination behind (§5).
+  const { result, baseline, manifest } = summarize(acc);
+  const snapshot = new Map<string, Buffer>();
+
+  for (const [rel, entry] of acc) {
+    const abs = join(options.destDir, rel);
+    ensureDir(abs);
+    writeFileSync(abs, entry.data);
+    snapshot.set(rel, entry.data);
+  }
 
   const state: TreelayState = {
     lock: lockFromGraph(graph),
@@ -115,7 +153,7 @@ export async function compile(
     baseline,
     manifest,
   };
-  writeState(options.destDir, state, graph.variables);
+  writeState(options.destDir, state, graph.variables, snapshot);
 
   return result;
 }
