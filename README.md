@@ -7,12 +7,12 @@ directory. The output stays **linked** to its template, so template changes can
 be pulled into an already-created, already-edited project (`update`), and local
 edits can be pushed back up into the layers they belong to (`promote`).
 
-> **Status: early, working.** The architecture and full design are specified in
-> [SPEC.md](./SPEC.md). Resolution (C3), value resolution, **`compile`**, and
-> **`update`** are implemented and tested — you can materialize a real, composed
-> project today and then pull template changes back into it after you have edited
-> it, with rendering, deep-merge, append/prepend, tombstones, sidecar/suffix ops,
-> **unified-diff patches with true 3-way merge**, `.treelay` state, and
+> **Status: early, working — the link is bidirectional.** The architecture and
+> full design are specified in [SPEC.md](./SPEC.md). Resolution (C3), value
+> resolution, **`compile`**, **`update`** (pulls template changes *down*) and
+> **`status`/`promote`/`extract`** (push local edits *up*) are implemented and
+> tested, with rendering, deep-merge, append/prepend, tombstones, sidecar/suffix
+> ops, **unified-diff patches with true 3-way merge**, `.treelay` state, and
 > **`explain`** for tracing where any file came from. Remaining per SPEC §12: npm
 > and git layer refs, `watch`, and `eject`.
 
@@ -54,9 +54,11 @@ See [SPEC.md §1](./SPEC.md) for the full comparison.
 treelay compile <src> <dest>   # materialize template → destination
 treelay update  <dest>         # pull template changes down (3-way merge)
                                #   --on-conflict markers|rej  --dry-run
-treelay status  <dest>         # list local changes vs baseline
-treelay promote <dest> --to <layer>   # push edits up into a layer
-treelay extract <dest> --as <path>    # capture edits as a new layer
+treelay status  <dest>         # list local changes vs baseline (--json)
+treelay promote <dest> [files...] --to <layer>   # push edits up into a layer
+                               #   --dry-run  --no-verify
+treelay extract <dest> [files...] --as <path>    # capture edits as a new layer
+                               #   --mixin  --name
 treelay plan    [dir]          # print the linearized layer order
 treelay explain <dir> [file]   # trace file provenance (--json for machine output)
 ```
@@ -135,6 +137,64 @@ Notes on behaviour worth knowing:
   stays usable precisely when `compile` is failing.
 - `winner`/`strategy`/`patchedFrom` mirror what `compile` records, and a test
   asserts the two agree so they cannot drift apart.
+
+### Pushing an edit back up (reflux)
+
+The mirror image of `update`. You edited a file in the compiled project and
+realised it belongs in a layer, so every sibling project gets it too. `status`
+is `git status` plus blame — it tells you not just what changed but where it
+could go:
+
+```console
+$ treelay status ./out
+  A  extra.ts   ← local-only (no template origin)
+  M  notes.txt  ← produced by @acme/base
+
+$ treelay promote ./out notes.txt --to @acme/base
+Promoted into @acme/base:
+  rewrite   notes.txt  → notes.txt
+Round-trip verified: the destination reproduces from the template.
+
+@acme/base is consumed beyond this project — 1 other layer inherits it. This edit reaches all of them on their next update.
+```
+
+After a verified promote the change flows down by inheritance, so it stops
+showing up as local drift — `status` now lists only `extra.ts`.
+
+**Three guards stand between you and a bad promotion:**
+
+1. **Shadowing** — promoting somewhere a higher layer would override is refused,
+   with the layer to use instead:
+   ```console
+   $ treelay promote ./out a.txt --to base
+   Promoting a.txt to base has no effect; with-ci overrides this file at a higher precedence.
+   Promote to with-ci or to the leaf instead (§8 guard 1).
+   ```
+2. **Round-trip verification** — after writing, treelay recompiles and asserts
+   the destination reproduces byte-for-byte. If it doesn't, the layer writes are
+   rolled back and nothing is left half-applied. Pass `--no-verify` to skip it.
+3. **Blast radius** — promoting reaches every sibling layer and every compiled
+   destination downstream of the target. That reach is reported (on stderr)
+   rather than left for someone else to discover on their next `update`.
+
+Where the change lands is chosen for you: a layer that already produces the file
+gets its **source rewritten**; a layer above the producer gets a **sidecar with
+only the delta** (recording both `base` and `baseContent`, so it still merges
+cleanly after the parent drifts); a locally-added file is **created**; a deletion
+becomes a **tombstone**.
+
+`extract` does the same thing into a brand-new layer:
+
+```console
+$ treelay extract ./out a.txt --as ../house-style --mixin
+Extracted 1 file(s) → /work/house-style
+  a.txt
+Wired in as a mixin of the leaf; round-trip verified.
+```
+
+Without `--mixin` the layer is created but left out of the graph — treelay says
+so and deliberately skips verification and rebaselining, because the edits are
+still local until you wire it in.
 
 ### Composition rules worth knowing
 

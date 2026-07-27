@@ -68,4 +68,16 @@ export {
 } from "./explain.js";
 export { update, planUpdate } from "./update.js";
 export type { UpdateOptions, UpdatePlan, Resolution } from "./update.js";
-export { status, promote, extract } from "./reflux.js";
+export { status, promote, extract, formatStatus } from "./reflux.js";
+export type {
+  PromoteOptions,
+  PromoteResult,
+  ExtractOptions,
+  ExtractResult,
+  LandedChange,
+  LandingMode,
+} from "./reflux.js";
+export { roundTripVerify, composeToMemory, describeMismatches } from "./verify.js";
+export type { VerifyResult, VerifyMismatch, MismatchKind } from "./verify.js";
+export { blastRadius, describeBlastRadius, commonAncestor } from "./blast-radius.js";
+export type { BlastRadius, BlastRadiusOptions } from "./blast-radius.js";

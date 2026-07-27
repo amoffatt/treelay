@@ -533,14 +533,46 @@ this belong?"* rather than yes/no.
 
 ### How a promoted change lands in the target layer
 
-Chosen automatically by where the target sits in the stack:
+Chosen automatically by what the target layer already does with the file:
 
-- **Rewrite the file in L** — when L is the *topmost* producer of that file
-  (nothing between L and self also touches it) and L is writable. Cleanest.
-- **Emit a patch** — when higher layers also modify the file, or L is read-only.
-  The change becomes a structured/unified patch in the nearest writable layer
-  above L (same machinery as §5, authored in reverse).
-- **New file dropped into L** — for added files pulled up.
+| Situation at target L | Mode | What lands |
+|---|---|---|
+| L already produces the file | **rewrite** | L's *own source file* is rewritten in place |
+| a *lower* layer produces it, L does not | **patch** | a sidecar in L carrying only the delta |
+| no layer produces it (locally added) | **create** | the file, dropped into L |
+| the change is a deletion | **tombstone** | L's source removed if it is the sole producer, else an `op: delete` sidecar |
+
+Two details matter more than they look:
+
+- **Rewrite reuses the layer's existing source path.** If L produces `config.json`
+  from `config.json.tmpl`, the rewrite goes back into the `.tmpl` — writing a
+  plain `config.json` beside it would leave the layer producing the same path
+  twice. The consequence is the one §8 already documents under
+  "reflux meets variables": the promoted file stops being parametric. Round-trip
+  verification is what makes that safe to do by default — if baking the rendered
+  values in changes the output, the promotion fails rather than quietly
+  de-templating the layer.
+- **Patch mode records both `base` and `baseContent` (§5).** Reflux composes the
+  sub-stack *below* L to obtain the exact inherited text, so it always has the
+  base in hand and never has to emit the weaker hash-only form. Structured files
+  get an RFC 7386 merge patch instead of a line diff.
+
+### Why guard 1 refuses so little
+
+Guard 1 (shadowing) fires only on a **wholesale** override above the target — a
+higher layer that creates, replaces, or deletes the same path. Partial actions
+(deep-merge, append, prepend, patch) are deliberately *not* treated as shadowing,
+even though they can also stop a promotion from reproducing.
+
+The split is about the quality of the answer. A wholesale override is provably
+futile and can be named precisely: *"with-ci overrides this file; promote there
+instead."* Whether a *partial* transform preserves the promoted bytes depends on
+merge order, array policy, and re-rendering — questions a static check can only
+guess at. Rather than guess, those fall to guard 2, which recompiles and simply
+looks. The result is that guard 1 never produces a false refusal, and guard 2
+never lets a bad promotion through; a failure there rolls the layer writes back
+through an undo log, because a half-written layer would be picked up by the very
+next compile.
 
 **Layer writability — three tiers, not two:**
 
@@ -623,13 +655,13 @@ re-templatization assist is **[open]**.
 treelay compile <src> <dest> [--set k=v] [--answers f] [--no-prompt]
                                # materialize template → destination (first run = instantiate)
 treelay update  <dest> [--set k=v]   # re-render with saved answers (prompt only new vars) + 3-way merge
-treelay status  <dest>         # list changes vs baseline, annotated with producing layer
+treelay status  <dest> [--json]  # list changes vs baseline, annotated with producing layer
 treelay diff    <dest|a> [b]   # working-vs-baseline hunks, or layer-vs-layer
-treelay promote <dest> [files...] --to <layer> [--interactive] [--dry-run]
+treelay promote <dest> [files...] [--to <layer>] [--dry-run] [--no-verify]
                                # push edits up; auto-suggests --to from provenance
                                # git targets: [--branch <name>] [--push] [--pr]
                                #   (commit-on-branch only unless --push/--pr given)
-treelay extract <dest> [files...] --as <path> [--mixin]
+treelay extract <dest> [files...] --as <path> [--mixin] [--name <n>]
                                # capture edits as a NEW overlay layer
 treelay plan    [dir]          # print linearized layer order + per-file resolution; write nothing
 treelay explain <dir> [file] [--set k=v] [--answers f] [--json]
@@ -672,8 +704,19 @@ const plan   = await planUpdate(destDir);      // dry-run 3-way, returns clean/c
 await update(destDir, { onConflict: "markers" });  // reuses saved answers, prompts only new vars
 
 const changes = await status(destDir);         // per file: kind (M/A/D) + producing layer + targets
-await promote(destDir, changes, { to: layerRef, verify: true });  // throws on shadow/conflict
-await extract(destDir, changes, { as: path, asMixin: true });
+// changes[i].targets already excludes layers a higher layer would shadow
+
+const promoted = await promote(destDir, changes, { to: layerRef, verify: true });
+// throws on a read-only or shadowed target, or a failed round-trip (writes rolled back)
+// promoted.landed[i] = { path, mode: rewrite|patch|create|tombstone, wrote }
+// promoted.blastRadius = { dependents[], destinations[] }  ← §8 guard 3
+
+const created = await extract(destDir, changes, { as: path, asMixin: true });
+// created.wired === false ⇒ not in the graph yet, so nothing was verified or rebaselined
+
+// The guards are reusable on their own:
+const check = await roundTripVerify(destDir, graph, values);   // { ok, mismatches, composed }
+const reach = blastRadius(layerDir, { searchRoot });           // who else consumes this layer
 ```
 
 ---
@@ -710,8 +753,8 @@ De-risk by building resolution first, then output, then the bidirectional loops:
 5. ✅ Unified-diff patches with 3-way merge (`.patch` suffix, sidecar `op: patch`, `patch` merge glob)
 6. ✅ `update` — the living-template three-way loop, reusing saved answers (pulls *down*)
 7. ✅ `explain` — per-file provenance (source layers or a compiled destination; `--json`)
-8. `status` + file-level `promote` / `extract` — reflux (pushes changes *up*)
-9. npm/git layer resolution + `treelay.lock`
+8. ✅ `status` + file-level `promote` / `extract` — reflux (pushes changes *up*)
+9. npm/git layer resolution + `treelay.lock`  ← next
 10. `watch` / `eject`
 
 Demoable and trustworthy after step 3; templated scaffolding works at step 4;
