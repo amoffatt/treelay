@@ -1,6 +1,6 @@
 {
   "name": "treelay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An inheritance/composition system for directory trees — compose templates from parents and mixins, materialize them, and keep the output linked for two-way updates.",
   "type": "module",
   "license": "MIT",
