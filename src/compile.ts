@@ -25,6 +25,7 @@ import {
   SIDECAR_SUFFIX,
 } from "./sidecar.js";
 import { strategyFor, deepMerge, applyMergePatch, applyJsonPatch } from "./merge/index.js";
+import { ALWAYS_IGNORE, destExclusions } from "./layer-files.js";
 import { parseStructured, stringifyStructured } from "./serde.js";
 import {
   writeState,
@@ -48,16 +49,6 @@ export interface CompileOptions {
   values?: Values;
 }
 
-/** Globs never materialized into the output (manifest + reserved dirs). */
-const ALWAYS_IGNORE = [
-  "**/node_modules/**",
-  "**/.git/**",
-  ".treelay/**",
-  "**/.treelay/**",
-  "**/treelay.json",
-  "**/treelay.yaml",
-  "**/treelay.yml",
-];
 
 /** One accumulated output file as it builds up across the layer stack. */
 interface FileEntry {
@@ -96,7 +87,7 @@ export async function compile(
   const acc = new Map<string, FileEntry>();
 
   for (const layer of graph.layers) {
-    await applyLayer(layer, acc, values);
+    await applyLayer(layer, acc, values, options.destDir);
   }
 
   // Materialize + collect provenance and baseline.
@@ -134,6 +125,7 @@ async function applyLayer(
   layer: Layer,
   acc: Map<string, FileEntry>,
   values: Values,
+  destDir?: string,
 ): Promise<void> {
   const suffix = layer.manifest.templateSuffix ?? DEFAULT_TEMPLATE_SUFFIX;
   const renderAllText = layer.manifest.render === "all-text";
@@ -143,7 +135,13 @@ async function applyLayer(
     cwd: layer.dir,
     dot: true,
     onlyFiles: true,
-    ignore: [...ALWAYS_IGNORE, ...(layer.manifest.ignore ?? [])],
+    // A destination nested inside this layer is pruned so a recompile never
+    // folds its own prior output back in (§7).
+    ignore: [
+      ...ALWAYS_IGNORE,
+      ...(layer.manifest.ignore ?? []),
+      ...destExclusions(layer.dir, destDir),
+    ],
   });
 
   const ops: Op[] = [];
