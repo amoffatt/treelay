@@ -16,13 +16,14 @@
  */
 
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve as resolvePath } from "node:path";
 
 import { enumerateLayer, mountTarget, type LayerEntry } from "./layer-files.js";
 import { parseSidecar } from "./sidecar.js";
 import { renderString } from "./render.js";
 import { strategyFor } from "./merge/index.js";
-import { resolve as resolveGraph, resolveRef } from "./resolve.js";
+import { resolve as resolveGraph } from "./resolve.js";
+import { canonicalRef, parseRef } from "./refs.js";
 import { readState, hasState } from "./state.js";
 import type {
   Layer,
@@ -123,13 +124,24 @@ interface Live {
 /** Classify each layer by why it is in the stack. */
 export function summarizeLayers(graph: ResolvedGraph): LayerSummary[] {
   const self = graph.layers[graph.layers.length - 1];
-  const mixinDirs = new Set<string>();
+
+  // Classification is done by *identity*, never by re-resolving. A remote ref
+  // resolved a second time here could land on a different commit than the graph
+  // was built from — and would hit the network to do it, in a read-only
+  // command. A layer's id already is its absolute dir (local) or its canonical
+  // ref (fetched), so matching against that is both exact and free.
+  const mixinIds = new Set<string>();
   if (self) {
     for (const ref of self.manifest.mixins ?? []) {
       try {
-        mixinDirs.add(resolveRef(ref, self.dir));
+        const parsed = parseRef(ref);
+        mixinIds.add(
+          parsed.kind === "local"
+            ? resolvePath(self.dir, parsed.path)
+            : canonicalRef(parsed),
+        );
       } catch {
-        // Unresolvable mixin refs (npm/git, pending §2) simply stay unclassified.
+        // An unparseable ref simply stays unclassified; explain never throws.
       }
     }
   }
@@ -141,7 +153,7 @@ export function summarizeLayers(graph: ResolvedGraph): LayerSummary[] {
       ? "mount"
       : layer === self
         ? "self"
-        : mixinDirs.has(layer.dir)
+        : mixinIds.has(layer.id)
           ? "mixin"
           : "parent",
     position: i + 1,
