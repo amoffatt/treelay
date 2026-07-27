@@ -12,6 +12,7 @@ import { parse as parseYaml } from "yaml";
 import { resolve } from "./resolve.js";
 import { resolveValues } from "./variables.js";
 import { compile } from "./compile.js";
+import { explain, explainDest, formatExplanation } from "./explain.js";
 import { hasState } from "./state.js";
 import type { Values } from "./types.js";
 
@@ -120,10 +121,47 @@ program
 
 program
   .command("explain")
-  .argument("<dir>", "leaf overlay directory")
-  .argument("<file>", "file to trace")
+  .argument("<dir>", "leaf overlay directory, or a compiled destination")
+  .argument("[file]", "a single output path to trace (default: every file)")
+  .option("--set <k=v>", "value used to render templated paths", collectSet)
+  .option("--answers <file>", "answers file to seed values")
+  .option("--json", "emit machine-readable JSON")
   .description("trace which layers touched a file, in order")
-  .action(() => notImplemented("explain"));
+  .action(
+    async (
+      dir: string,
+      file: string | undefined,
+      opts: { set?: Values; answers?: string; json?: boolean },
+    ) => {
+      // A compiled destination explains itself from its own state (lineage +
+      // saved answers); a source directory is resolved and explained directly.
+      const result = hasState(dir)
+        ? await explainDest(dir)
+        : await explain(resolve(dir), {
+            values: {
+              ...(opts.answers ? loadAnswers(opts.answers) : {}),
+              ...(opts.set ?? {}),
+            },
+          });
+
+      if (opts.json) {
+        const payload = file
+          ? { layers: result.layers, files: pick(result.files, file) }
+          : result;
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+
+      console.log(formatExplanation(result, file));
+      if (file && !result.files[file]) process.exit(1);
+    },
+  );
+
+/** Narrow an explanation's file map to a single path (empty when absent). */
+function pick<T>(files: Record<string, T>, path: string): Record<string, T> {
+  const hit = files[path];
+  return hit ? { [path]: hit } : {};
+}
 
 program
   .command("validate")

@@ -25,5 +25,20 @@ export {
 } from "./sidecar.js";
 export { strategyFor, defaultStrategy, deepMerge } from "./merge/index.js";
 export { compile } from "./compile.js";
+export {
+  ALWAYS_IGNORE,
+  SelfCompileError,
+  classifyEntry,
+  destExclusions,
+  enumerateLayer,
+  listLayerFiles,
+} from "./layer-files.js";
+export {
+  explain,
+  explainDest,
+  explainFile,
+  formatExplanation,
+  summarizeLayers,
+} from "./explain.js";
 export { update, planUpdate } from "./update.js";
 export { status, promote, extract } from "./reflux.js";
