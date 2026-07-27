@@ -107,8 +107,18 @@ export interface ResolvedGraph {
 /** A `.treelay` sidecar operation on an inherited file (§4). */
 export interface SidecarOp {
   op: SidecarOpKind;
-  /** Parent content hash the patch was authored against → enables 3-way (§5). */
+  /**
+   * Hash of the parent content the patch was authored against (§5). Detects
+   * drift: when it still matches the inherited file, the patch is known to
+   * apply exactly; when it doesn't, compile takes the reconciling path.
+   */
   base?: string;
+  /**
+   * The parent content itself. A hash can detect drift but cannot reconstruct
+   * the base, so this is what actually enables a *true* diff3 once the
+   * inherited file has moved on. Reflux (§8) records it automatically.
+   */
+  baseContent?: string;
   /** Liquid expression; skip the op when falsy. */
   when?: string;
   /** Render the payload/result with variables (§6). */

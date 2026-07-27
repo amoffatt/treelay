@@ -9,12 +9,13 @@
  * output, so each layer is rendered before the merge step.
  */
 
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import fg from "fast-glob";
 
-import { NotImplementedError } from "./errors.js";
+import { MergeConflictError } from "./errors.js";
+import { hashContent } from "./hash.js";
+import { applyPatch3Way } from "./merge/patch.js";
 import { renderString, templateTarget, DEFAULT_TEMPLATE_SUFFIX } from "./render.js";
 import {
   isSidecar,
@@ -75,16 +76,15 @@ interface Op {
   content?: string;
   merge?: unknown;
   jsonPatch?: unknown[];
+  /** Recorded base hash — drift detector for `patch` ops (§5). */
   base?: string;
+  /** Recorded base content — enables true diff3 under drift (§5). */
+  baseContent?: string;
 }
 
 /** Does this string contain Liquid markup worth rendering? */
 function needsRender(s: string): boolean {
   return s.includes("{{") || s.includes("{%");
-}
-
-function hash(data: Buffer): string {
-  return "sha256:" + createHash("sha256").update(data).digest("hex");
 }
 
 /** Materialize a resolved graph into a destination directory. */
@@ -114,7 +114,7 @@ export async function compile(
       owned: false,
       ...(entry.patchedFrom.length ? { patchedFrom: entry.patchedFrom } : {}),
     };
-    baseline[rel] = hash(entry.data);
+    baseline[rel] = hashContent(entry.data);
     manifest[rel] = { owned: false, fromLayer: entry.fromLayer };
   }
 
@@ -206,6 +206,7 @@ function sidecarToOp(
   };
   if (sc.when !== undefined) op.when = sc.when;
   if (sc.base !== undefined) op.base = sc.base;
+  if (sc.baseContent !== undefined) op.baseContent = sc.baseContent;
   if (sc.content !== undefined) op.content = sc.content;
   if (sc.merge !== undefined) op.merge = sc.merge;
   if (sc.jsonPatch !== undefined) op.jsonPatch = sc.jsonPatch;
@@ -262,9 +263,21 @@ function mergeFile(
       acc.delete(target);
       break;
     case "patch":
-      throw new NotImplementedError(
-        `unified-diff patch via merge glob for "${target}" (§5, build step 5)`,
+      // The glob declared this path's files to *be* unified diffs, so the
+      // higher layer's content is a patch onto the inherited file. No recorded
+      // base is possible here (a plain file carries no metadata), so this is
+      // best-effort apply — the sidecar form exists for when that matters.
+      existing.data = Buffer.from(
+        applyPatch3Way({
+          file: target,
+          current: existing.data.toString("utf8"),
+          patch: data.toString("utf8"),
+        }),
+        "utf8",
       );
+      existing.strategy = "patch";
+      existing.patchedFrom.push(layer.id);
+      break;
   }
 }
 
@@ -340,12 +353,62 @@ async function applyOp(
       return;
     }
 
-    case "patch":
-      // Unified-diff 3-way merge is build step 5 (§5).
-      throw new NotImplementedError(
-        `unified-diff 3-way patch for "${op.target}" (§5, build step 5)`,
+    case "patch": {
+      // A patch edits an inherited file; with nothing to inherit there is no
+      // "super()" to call, so this is an authoring error, not a silent create.
+      if (!existing) {
+        throw new MergeConflictError(
+          op.target,
+          "patch has nothing to apply to — the file is not produced by any " +
+            "lower layer (never created, or removed by a tombstone). " +
+            "Ship the full file instead of a patch, or drop the tombstone.",
+        );
+      }
+      const current = existing.data.toString("utf8");
+      existing.data = Buffer.from(
+        applyPatch3Way({
+          file: op.target,
+          current,
+          patch: content ?? "",
+          ...resolvePatchBase(op, current),
+        }),
+        "utf8",
       );
+      existing.strategy = "patch";
+      existing.patchedFrom.push("sidecar");
+      return;
+    }
   }
+}
+
+/**
+ * Decide what base content (if any) a patch can be reconciled against (§5).
+ *
+ * - Explicit `baseContent` wins, and its hash is verified when `base` is also
+ *   recorded — a mismatch means the sidecar contradicts itself.
+ * - Otherwise a recorded `base` hash that still matches the inherited file
+ *   proves the file has not drifted, so the file *is* the base and the patch is
+ *   guaranteed to apply.
+ * - A recorded hash that no longer matches means drift with no way to
+ *   reconstruct the original, so we hand back no base: `applyPatch3Way` then
+ *   relocates what it can and fails loud on the rest, rather than blindly
+ *   applying a patch we know was authored against different content.
+ */
+function resolvePatchBase(op: Op, current: string): { base?: string } {
+  if (op.baseContent !== undefined) {
+    if (op.base !== undefined && hashContent(op.baseContent) !== op.base.trim()) {
+      throw new MergeConflictError(
+        op.target,
+        `sidecar is inconsistent: \`baseContent\` hashes to ` +
+          `${hashContent(op.baseContent)} but \`base\` records ${op.base}.`,
+      );
+    }
+    return { base: op.baseContent };
+  }
+  if (op.base !== undefined && hashContent(current) === op.base.trim()) {
+    return { base: current };
+  }
+  return {};
 }
 
 /** Write a structured (parsed) value back into the accumulator. */

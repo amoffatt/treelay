@@ -23,7 +23,16 @@ export {
   sidecarTarget,
   desugarSuffix,
 } from "./sidecar.js";
-export { strategyFor, defaultStrategy, deepMerge } from "./merge/index.js";
+export {
+  strategyFor,
+  defaultStrategy,
+  deepMerge,
+  applyPatch3Way,
+  applyMergePatch,
+  applyJsonPatch,
+} from "./merge/index.js";
+export type { Patch3WayArgs } from "./merge/patch.js";
+export { hashContent, matchesHash } from "./hash.js";
 export { compile } from "./compile.js";
 export {
   ALWAYS_IGNORE,
