@@ -161,6 +161,13 @@ export interface Change {
   kind: ChangeKind;
   /** Layer id currently producing this file (undefined for user-added). */
   producingLayer?: string;
-  /** Writable layers this change could be promoted into. */
+  /**
+   * Writable layers this change could be promoted into, already filtered to
+   * those a higher layer would not immediately shadow (§8 guard 1).
+   */
   targets?: string[];
+  /** Layers that patched/merged on top of the producer, in order. */
+  patchedBy?: string[];
+  /** True when the destination owns the file and no layer produces it (§7). */
+  owned?: boolean;
 }
