@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { resolveValues } from "../src/variables.js";
+import { Writable } from "node:stream";
+import { resolveValues, MaskableOutput } from "../src/variables.js";
 import type { ResolvedGraph, VariableDecl } from "../src/types.js";
 
 /** Build a minimal graph carrying only a merged variable schema. */
@@ -83,5 +84,46 @@ describe("resolveValues", () => {
       },
     });
     await expect(resolveValues(g, opts)).rejects.toThrow(/name is required/);
+  });
+});
+
+describe("MaskableOutput", () => {
+  /** Collect everything that reaches the underlying stream. */
+  function sink() {
+    const written: string[] = [];
+    const target = new Writable({
+      write(chunk, _enc, cb) {
+        written.push(String(chunk));
+        cb();
+      },
+    });
+    return { target, text: () => written.join("") };
+  }
+
+  it("passes writes through while unmuted", () => {
+    const { target, text } = sink();
+    const out = new MaskableOutput(target);
+    out.write("Password? ");
+    expect(text()).toBe("Password? ");
+  });
+
+  it("swallows writes while muted, so a typed secret never reaches the terminal", () => {
+    const { target, text } = sink();
+    const out = new MaskableOutput(target);
+    out.write("Password? ");
+    out.muted = true;
+    // What readline would echo, one keystroke at a time.
+    for (const ch of "hunter2") out.write(ch);
+    expect(text()).toBe("Password? ");
+  });
+
+  it("resumes after unmuting, so the next prompt is visible again", () => {
+    const { target, text } = sink();
+    const out = new MaskableOutput(target);
+    out.muted = true;
+    out.write("swallowed");
+    out.muted = false;
+    out.write("\nNext? ");
+    expect(text()).toBe("\nNext? ");
   });
 });

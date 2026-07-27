@@ -7,9 +7,35 @@
  */
 
 import { createInterface } from "node:readline/promises";
+import { Writable } from "node:stream";
 import { parse as parseYaml } from "yaml";
 import { createEngine } from "./render.js";
 import type { Layer, ResolvedGraph, VariableDecl, VariableType, Values } from "./types.js";
+
+/**
+ * A stdout proxy whose echo can be silenced part-way through a prompt.
+ *
+ * readline echoes keystrokes through its `output` stream, so muting that stream
+ * while a `secret` is typed is what keeps the value off the screen and out of
+ * scrollback. The prompt text is written before muting begins, so the question
+ * stays visible while the answer does not.
+ */
+export class MaskableOutput extends Writable {
+  muted = false;
+
+  constructor(private readonly target: NodeJS.WritableStream = process.stdout) {
+    super();
+  }
+
+  override _write(
+    chunk: Buffer | string,
+    _encoding: BufferEncoding,
+    done: (error?: Error | null) => void,
+  ): void {
+    if (!this.muted) this.target.write(chunk);
+    done();
+  }
+}
 
 /**
  * Merge variable declarations across layers (lowest → highest precedence).
@@ -116,16 +142,34 @@ export async function resolveValues(
 
   // Set up prompting lazily so non-interactive runs never touch stdin.
   let rl: ReturnType<typeof createInterface> | undefined;
+  let out: MaskableOutput | undefined;
   const promptVar = async (
     name: string,
     decl: VariableDecl,
     fallback: unknown,
   ): Promise<unknown> => {
-    rl ??= createInterface({ input: process.stdin, output: process.stdout });
+    if (!rl) {
+      out = new MaskableOutput();
+      rl = createInterface({
+        input: process.stdin,
+        output: out,
+        // readline infers `terminal` from `output.isTTY`, which a proxy stream
+        // does not have. Without this it would disable echo and line editing
+        // even in a real terminal.
+        terminal: process.stdout.isTTY === true,
+      });
+    }
     const hint = decl.choices ? ` ${JSON.stringify(decl.choices)}` : "";
     const def = fallback !== undefined ? ` [${String(fallback)}]` : "";
-    // TODO(§6): mask `secret` input; readline echoes it for now.
-    const answer = (await rl.question(`${decl.prompt}${hint}${def} `)).trim();
+    // `question` writes the prompt synchronously, so muting straight afterwards
+    // hides the typed answer without hiding the question.
+    const pendingAnswer = rl.question(`${decl.prompt}${hint}${def} `);
+    if (decl.secret && out) out.muted = true;
+    const answer = (await pendingAnswer).trim();
+    if (decl.secret && out) {
+      out.muted = false;
+      out.write("\n"); // stand in for the newline the echoed Enter would have shown
+    }
     return answer === "" ? fallback : coerce(decl.type, answer);
   };
 

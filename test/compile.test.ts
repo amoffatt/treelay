@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { resolve } from "../src/resolve.js";
@@ -37,6 +37,13 @@ async function build(leafDir: string, values: Record<string, unknown> = {}) {
 }
 
 const read = (dest: string, rel: string) => readFileSync(join(dest, rel), "utf8");
+
+/** Every file under `dir`, recursively, as absolute paths. */
+function walk(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)],
+  );
+}
 
 describe("compile — precedence & strategies", () => {
   it("higher layers replace inherited plain files, lower-only files survive", async () => {
@@ -151,6 +158,28 @@ describe("compile — state", () => {
     expect(Object.keys(state.baseline).sort()).toEqual(["a.txt", "b.txt"]);
     expect(state.baseline["a.txt"]).toMatch(/^sha256:/);
     expect(state.manifest["b.txt"]).toMatchObject({ owned: false });
+  });
+
+  it("keeps secret variables out of everything written to disk", async () => {
+    const leaf = layer("leaf", {
+      "treelay.json": JSON.stringify({
+        variables: {
+          svc: { type: "string" },
+          token: { type: "string", secret: true },
+        },
+      }),
+      "a.txt": "x",
+    });
+
+    const dest = await build(leaf, { svc: "billing", token: "hunter2" });
+
+    expect(readState(dest).answers).toEqual({ svc: "billing" });
+    // Asserted over the whole state directory rather than answers.json alone:
+    // a secret leaking into the baseline or manifest would be just as bad, and
+    // this keeps the guarantee true if the state layout changes.
+    for (const file of walk(join(dest, ".treelay"))) {
+      expect(readFileSync(file, "utf8")).not.toContain("hunter2");
+    }
   });
 
   it("does not materialize manifest files into the output", async () => {
