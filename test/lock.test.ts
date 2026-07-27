@@ -36,11 +36,20 @@ import {
 } from "../src/lockfile.js";
 import { canonicalRef } from "../src/refs.js";
 import { compile } from "../src/compile.js";
-import { explainDest } from "../src/explain.js";
+import { explain, explainDest } from "../src/explain.js";
 import { checkDrift, formatDrift, hasDrift } from "../src/drift.js";
+import { planUpdate, update } from "../src/update.js";
 import { makeRepo, gitAvailable, withRemoteOffline, type Repo } from "./helpers/git-fixture.js";
 import { writeTree, manifest, readText } from "./helpers/tree.js";
-import { GIT_REFS, gitRef, resolveWith, lockBytes, requireLockBytes } from "./helpers/step9.js";
+import {
+  GIT_REFS,
+  NPM_REFS,
+  gitRef,
+  npmRef,
+  resolveWith,
+  lockBytes,
+  requireLockBytes,
+} from "./helpers/step9.js";
 
 const HAS_GIT = gitAvailable();
 const LIVE = GIT_REFS && HAS_GIT;
@@ -369,6 +378,40 @@ describe.skipIf(!LIVE)("treelay.lock — drift is reported, never acted on", () 
   });
 });
 
+describe.skipIf(!LIVE)("drift reaches the surfaces people actually look at", () => {
+  it("shows up in an update plan without moving the build", async () => {
+    // `update` pulls *template* changes down; it is not a licence to change
+    // which upstream revision the template was composed from. So the plan
+    // reports the drift and merges the pinned content anyway.
+    const { repo, v1 } = movingRemote();
+    const leaf = leafOn(repo, "main");
+    const dest = join(root, "out");
+    await compile(resolveWith(leaf), { destDir: dest });
+
+    const v2 = repo.commit({ "shared.txt": "v2\n" });
+
+    const plan = await planUpdate(dest);
+    expect(plan.drift.some((r) => r.status === "moved" && r.current === v2)).toBe(true);
+    expect(readText(dest, "shared.txt")).toBe("v1\n");
+
+    await update(dest);
+    expect(readText(dest, "shared.txt")).toBe("v1\n");
+    expect(readLock(leaf).refs[canonicalRef(gitRef(repo, "main"))]!.resolved).toBe(v1);
+  });
+
+  it("tells explain exactly which revision produced a file", async () => {
+    // The other half of "surfaced": drift asks whether upstream moved, and
+    // explain answers what *this* tree actually has — the question you ask
+    // when a build behaves differently from a colleague's.
+    const { repo, v1 } = movingRemote();
+    const leaf = leafOn(repo, "main");
+
+    const why = await explain(resolveWith(leaf), { values: {} });
+    const fetched = why.layers.find((l) => l.ref?.startsWith("git+"));
+    expect(fetched).toMatchObject({ revision: v1, writable: false });
+  });
+});
+
 describe.skipIf(!LIVE)("fetch cache — content-addressed, so pins coexist", () => {
   it("materializes two revisions of one remote side by side", async () => {
     // The cache is keyed by *what the content is*, not by who asked. Keyed by
@@ -421,6 +464,19 @@ describe.skipIf(!LIVE)("fetch cache — content-addressed, so pins coexist", () 
     expect(fetched[0]!.writable).toBe(false);
   });
 
+  it("refuses a cache entry that no longer matches the recorded integrity", async () => {
+    // The lock's integrity hash is the only thing standing between a pinned,
+    // "reproducible" build and a cache someone edited in place.
+    const { repo } = movingRemote();
+    const leaf = leafOn(repo, "main");
+    await compile(resolveWith(leaf), { destDir: join(root, "out-a") });
+
+    const cached = resolveWith(leaf).layers.find((l) => l.origin?.kind === "git")!;
+    writeFileSync(join(cached.dir, "shared.txt"), "tampered\n");
+
+    expect(() => resolveWith(leaf)).toThrow(/integrity|cache/i);
+  });
+
   it("identifies a fetched layer by its canonical ref, not its cache path", async () => {
     // Cache paths differ per machine; provenance recorded in a destination has
     // to mean the same thing everywhere it is read.
@@ -433,5 +489,33 @@ describe.skipIf(!LIVE)("fetch cache — content-addressed, so pins coexist", () 
     const ids = why.layers.map((l) => l.id);
     expect(ids.some((id) => id.startsWith("git+"))).toBe(true);
     expect(ids.some((id) => id.includes("cache"))).toBe(false);
+  });
+});
+
+describe.skipIf(!NPM_REFS)("treelay.lock — npm layers", () => {
+  it("pins the exact installed version behind a semver range", async () => {
+    // A range is a question, not an answer. What the lock has to record is the
+    // version that actually composed, so a teammate whose node_modules resolved
+    // differently sees a diff instead of a mystery.
+    writeTree(join(root, "leaf", "node_modules", "@acme/base"), {
+      "package.json": manifest({ name: "@acme/base", version: "2.3.1", treelay: {} }),
+      "a.txt": "packaged\n",
+    });
+    const leaf = writeTree(join(root, "leaf"), {
+      "treelay.json": manifest({ name: "leaf", parents: [npmRef("@acme/base", "^2")] }),
+    });
+
+    const dest = join(root, "out");
+    await compile(resolveWith(leaf), { destDir: dest });
+
+    expect(readText(dest, "a.txt")).toBe("packaged\n");
+    const entries = Object.values(readLock(leaf).refs);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "npm",
+      source: "@acme/base",
+      requested: "^2",
+      resolved: "2.3.1",
+    });
   });
 });
