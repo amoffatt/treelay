@@ -151,13 +151,17 @@ Array merge policy (`"arrays"`) defaults to **replace** — concat surprises peo
 
 A `<targetPath>.treelay` file sitting beside where a file would land describes an
 **operation on the inherited file**. It exists because filename suffixes can't
-carry metadata — most importantly the **base hash** that §5's true 3-way merge
+carry metadata — most importantly the **base** that §5's true 3-way merge
 needs. YAML, so unified-diff payloads read cleanly as block scalars:
 
 ```yaml
 # config.json.treelay   → operates on the inherited config.json
 op: patch                # patch | merge | append | prepend | delete | replace
-base: sha256:ab12…       # parent content the patch was authored against → enables real 3-way
+base: sha256:ab12…       # hash of the parent text this was authored against → drift detection
+baseContent: |           # the parent text itself → enables true 3-way once it drifts (§5)
+  {
+    "name": "svc",
+  }
 when: "{{ useDocker }}"  # optional conditional (skip the op when false)
 render: true             # render the payload/result with variables (§6)
 patch: |
@@ -178,28 +182,108 @@ op: delete
 ```
 
 Division of power: a bare `*.patch` (no recorded base) is **best-effort apply**;
-a sidecar `op: patch` with `base` gets **true 3-way merge**. **Reflux (§8)
-auto-generates sidecars** with the base hash baked in, so hand-authoring is the
-exception, not the rule. (Sidecars are distinct from the `.treelay/` *state
-directory*, which only ever exists in compiled destinations, never in layers.)
+a sidecar `op: patch` carrying `baseContent` gets a **true 3-way merge**, and one
+carrying only `base` gets honest drift detection in between (§5 spells out the
+four cases). **Reflux (§8) auto-generates sidecars** with both fields baked in,
+so hand-authoring is the exception, not the rule. (Sidecars are distinct from the
+`.treelay/` *state directory*, which only ever exists in compiled destinations,
+never in layers.)
+
+### Never composed — built-in exclusions **[decided]**
+
+Some paths are excluded from every layer's walk before any strategy applies —
+an implicit tombstone that no manifest has to declare:
+
+| Excluded | Why |
+|---|---|
+| `.git` (**file or directory**) | VCS metadata; see below |
+| `node_modules/` | dependency install output, never template content |
+| `.treelay/` | destination *state* dir (§7); only valid in an output |
+| `treelay.{json,yaml,yml}` | the layer's own manifest, not payload |
+
+**`.git` is excluded in both of its forms, and this matters.** A layer vendored
+as a **git submodule** carries a `.git` *gitlink file* (`gitdir: …`) where a
+normal clone has a directory. Composing either one publishes VCS metadata into
+the output; the gitlink case is worse, because the compiled tree then looks to
+git like a broken submodule pointing at a path that does not exist there. Only
+the exact name `.git` is matched — `.gitignore` and `.gitmodules` are ordinary
+content and compose normally.
+
+This is deliberately *not* configurable. A layer that wants to ship VCS-adjacent
+content can name it something else; there is no legitimate case for a compiled
+instance inheriting its template's `.git`.
 
 ---
 
-## 5. Patches & three-way merge **[decided]**
+## 5. Patches & three-way merge **[decided]** ✅ *implemented*
 
 Patches make this powerful *and* fragile: if a parent file changes, a child's
 line-diff may no longer apply.
 
-- **3-way merge with a recorded base.** Every patch stores the content hash of
-  the parent text it was authored against — this is the `base:` field of the
-  `.treelay` sidecar (§4). On compile, do a real 3-way merge (base → parent-now,
-  base → patched). Resolves cleanly far more often than a flat apply, and
-  produces honest conflict markers when it can't.
+- **3-way merge with a recorded base.** A patch records the parent text it was
+  authored against, so compile can reconstruct the author's intent
+  (base → patched) and reconcile it against the drift the parent actually took
+  (base → parent-now). Resolves cleanly far more often than a flat apply, and
+  produces honest conflicts when it can't.
 - **Structured patches for structured files.** JSON Merge Patch (RFC 7386) for
   simple cases, JSON Patch (RFC 6902) for precise array ops. No line-drift at
   all — prefer these for config.
-- **Fail loud, never silent.** A patch that won't apply stops the build with a
-  diff of what it expected. Never half-apply.
+- **Fail loud, never silent.** A patch that won't apply stops the build. Compile
+  is all-or-nothing: nothing is materialized until every layer has merged, so a
+  conflict leaves the destination untouched rather than half-written.
+
+### `base` vs `baseContent` — why a hash is not enough
+
+An earlier draft said the `base:` **hash** alone enabled a real 3-way merge. It
+doesn't: a hash can prove the parent drifted, but it cannot reconstruct the
+original text that diff3 needs as its merge base. The two fields split that job:
+
+| Field | Carries | Buys you |
+|---|---|---|
+| `base:` | `sha256:…` of the authored-against parent | **drift detection** — cheap, and proves a clean apply when it still matches |
+| `baseContent:` | the parent text itself | **true diff3** once the parent has moved on |
+
+Compile picks its path accordingly:
+
+1. **`baseContent` present** → true diff3. When `base` is also recorded it is
+   verified against it; a mismatch means the sidecar contradicts itself and is
+   rejected rather than trusted.
+2. **`base` matches the inherited file** → no drift, so the file *is* the base;
+   the patch is guaranteed to apply exactly.
+3. **`base` no longer matches** → drift, with no way to reconstruct the original.
+   Compile does *not* blindly apply a patch it knows was authored elsewhere: it
+   relocates hunks that merely moved and fails loud on the rest.
+4. **No `base` at all** (a bare `*.patch`) → best-effort apply, same as (3).
+
+Reflux (§8) has the base text in hand when it generates a sidecar, so it records
+both fields and case (1) is the norm for tool-authored patches; hand-authored
+sidecars can record just the hash and still get honest drift detection.
+
+### What "best-effort" actually recovers
+
+Worth being precise, since it sets expectations for hand-authored patches:
+
+- **Moved hunks** — recovered. The matcher searches for each hunk's location, so
+  content added or removed *elsewhere* in the file doesn't break the patch.
+- **Changed context** — rejected. If a line inside the hunk's context window
+  changed, there is no safe way to guess, so it becomes a conflict. (A `fuzz`
+  setting does not rescue this case; it only tolerates truncated leading/trailing
+  context.) This is exactly the case `baseContent` upgrades to a clean merge:
+  diff3 sees the two edits are separated by unchanged lines and takes both.
+- **Overlapping edits** — conflict, including edits on *immediately adjacent*
+  lines, which diff3 cannot order. Same rule git applies.
+
+### Patch meets tombstone
+
+A patch edits an inherited file, so it needs something to inherit — the `super()`
+analogy of §1 holds:
+
+- **tombstone above a patch** — the delete wins; the file is gone. (The patch ran
+  at a lower layer; a later layer removing the file is a normal override.)
+- **patch above a tombstone** — the patch has nothing to apply to and **fails
+  loud**. It is not treated as a file-creating operation, because a patch that
+  silently becomes "write this whole file" hides a real authoring mistake.
+- **patch on a file no layer produces** — same failure, same reason.
 
 ---
 
@@ -301,6 +385,20 @@ the template produced *with these answers*," which is what later updates merge
 against. Persisting `answers.json` is what makes re-rendering on update
 deterministic (copier's `.copier-answers.yml`, but one file for the whole
 composition rather than one per template).
+
+#### Destinations inside the source tree **[decided]**
+
+`destDir` may be **nested inside a layer** — compiling into a gitignored
+`build/` within the source repo is a first-class, supported layout, not an
+accident to be worked around. A destination that is a strict descendant of a
+layer is pruned from that layer's walk, so a recompile never re-consumes its own
+prior output. (The first compile is safe by construction — enumeration precedes
+materialization — but the second would otherwise fold `build/` back in, and
+again on the third, compounding each time.)
+
+The degenerate case fails loud rather than silently eating its own sources:
+`destDir` **equal to** a layer root is refused, because materializing over the
+directory being read has no correct interpretation.
 
 ### Update (re-pull template changes into an edited project)
 
@@ -486,7 +584,10 @@ treelay promote <dest> [files...] --to <layer> [--interactive] [--dry-run]
 treelay extract <dest> [files...] --as <path> [--mixin]
                                # capture edits as a NEW overlay layer
 treelay plan    [dir]          # print linearized layer order + per-file resolution; write nothing
-treelay explain <dir> <file>   # trace which layers touched a file, in order, with patches
+treelay explain <dir> [file] [--set k=v] [--answers f] [--json]
+                               # trace which layers touched a file, in order, with patches
+                               # <dir> = a source layer, or a compiled destination
+                               # omit [file] to explain every path in the composition
 treelay validate [dir]         # cycles? patches apply? unresolved conflicts? drift vs lock?
 treelay watch   <src> <dest>   # recompile on change
 treelay eject   <dest>         # flatten + drop .treelay state (sever the template link)
@@ -513,6 +614,12 @@ const values = await resolveValues(graph, { answers, set, prompt });  // §6 ste
 const result = await compile(graph, { destDir, values });
 // result.files[path] = { fromLayer, strategy, patchedFrom, owned }  ← powers `explain`
 
+const why  = await explain(graph, { values });  // no output I/O; read-only provenance
+// why.layers    = [{ id, name, role: parent|mixin|self, position, writable }]
+// why.files[p]  = { contributions[], present, winner, strategy, patchedFrom }
+//   winner/strategy/patchedFrom mirror result.files[p] exactly (asserted by test)
+const dest = await explainDest(destDir);        // re-explains from lockfile lineage + saved answers
+
 const plan   = await planUpdate(destDir);      // dry-run 3-way, returns clean/conflict per file
 await update(destDir, { onConflict: "markers" });  // reuses saved answers, prompts only new vars
 
@@ -527,7 +634,11 @@ await extract(destDir, changes, { as: path, asMixin: true });
 
 - **Array merge default** — `replace` proposed; revisit if config use cases want `by-key`. **[open]**
 - **What's tracked** — contents always; modes + symlinks proposed yes; empty dirs only via `.keep`. **[open]**
-- **Conflict UX** — git-style inline markers vs a `.rej`-style sidecar vs interactive resolver. **[open]**
+- **Conflict UX** — split by direction. For **compile** it is **[decided]**: fail
+  the build, write nothing (§5) — a template that can't compose has no partial
+  output worth keeping. For **update**, where the user's own edits are at stake
+  and failing means doing nothing, the presentation is still **[open]**:
+  git-style inline markers vs a `.rej`-style sidecar vs an interactive resolver.
 - **Reflux granularity** — file-level for v1; hunk-level splitting + auto-`absorb` routing deferred to v2. **[open]**
 - **Template engine** — **LiquidJS [decided]** (safe, sandboxed; over Nunjucks/Eta) — see §6.
 - **Reflux re-templatization** — store promoted edits literally vs assisted value→`{{ var }}` substitution (§8). **[open]**
@@ -545,9 +656,9 @@ De-risk by building resolution first, then output, then the bidirectional loops:
 2. ✅ `replace` / `deep-merge` / tombstone strategies (+ append/prepend, sidecar `merge`)
 3. ✅ `compile` to a destination (fresh instantiation + `.treelay` state)
 4. ✅ Variable schema merge + value resolution + suffix-opt-in rendering (§6)
-5. Unified-diff patches with 3-way merge ← next
-6. `update` — the living-template three-way loop, reusing saved answers (pulls *down*)
-7. `explain`
+5. ✅ Unified-diff patches with 3-way merge (`.patch` suffix, sidecar `op: patch`, `patch` merge glob)
+6. `update` — the living-template three-way loop, reusing saved answers (pulls *down*) ← next
+7. ✅ `explain` — per-file provenance (source layers or a compiled destination; `--json`)
 8. `status` + file-level `promote` / `extract` — reflux (pushes changes *up*)
 9. npm/git layer resolution + `treelay.lock`
 10. `watch` / `eject`
