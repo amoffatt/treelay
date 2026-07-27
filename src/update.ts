@@ -20,6 +20,7 @@ import {
 import { join } from "node:path";
 
 import { composeFiles, summarize, type FileEntry } from "./compile.js";
+import { checkDrift, type DriftReport } from "./drift.js";
 import { hashContent } from "./hash.js";
 import { mergeText3 } from "./merge/patch.js";
 import { mergeStructured3 } from "./merge/structured.js";
@@ -32,6 +33,7 @@ import {
   lockFromGraph,
   ensureDir,
   sourceOf,
+  type LockFile,
   type TreelayState,
 } from "./state.js";
 import { resolveValues } from "./variables.js";
@@ -59,6 +61,8 @@ export interface UpdateOptions {
   set?: Record<string, unknown>;
   /** Prompt for variables the new template version introduced (default true). */
   prompt?: boolean;
+  /** Refuse to resolve refs `treelay.lock` does not pin (§3). */
+  frozen?: boolean;
 }
 
 export interface UpdatePlan {
@@ -68,6 +72,14 @@ export interface UpdatePlan {
   conflicts: string[];
   /** Variables the new template version introduced and now has answers for. */
   newVariables: string[];
+  /**
+   * Pinned refs whose upstream has moved since `treelay.lock` was written (§3).
+   *
+   * Reported, never followed. An update that silently recomposed at a newer
+   * revision because a branch advanced would make "pull my template's changes
+   * down" mean two different things depending on the day.
+   */
+  drift: DriftReport[];
 }
 
 /** One file's decided outcome, held in memory until the whole plan is known. */
@@ -132,7 +144,7 @@ async function planFrom(
   theirs: Map<string, FileEntry>;
   values: Values;
   state: TreelayState;
-  lineage: string[];
+  destLock: LockFile;
   variables: Record<string, VariableDecl>;
 }> {
   const state = readState(destDir);
@@ -150,7 +162,7 @@ async function planFrom(
     );
   }
 
-  const graph = resolve(src);
+  const graph = resolve(src, options.frozen ? { frozen: true } : {});
 
   // Saved answers are pre-supplied, so `resolveValues` only prompts for
   // variables the new template version added (§7).
@@ -182,11 +194,11 @@ async function planFrom(
 
   return {
     decisions,
-    plan: { files, conflicts, newVariables },
+    plan: { files, conflicts, newVariables, drift: checkDrift(graph) },
     theirs,
     values,
     state,
-    lineage: lockFromGraph(graph).lineage,
+    destLock: lockFromGraph(graph),
     variables: graph.variables,
   };
 }
@@ -301,7 +313,7 @@ export async function update(
   destDir: string,
   options: UpdateOptions = {},
 ): Promise<UpdatePlan> {
-  const { decisions, plan, theirs, values, variables, lineage } = await planFrom(
+  const { decisions, plan, theirs, values, variables, destLock } = await planFrom(
     destDir,
     options,
   );
@@ -333,7 +345,7 @@ export async function update(
 
   writeState(
     destDir,
-    { lock: { lineage, versions: {} }, answers: values, baseline, manifest },
+    { lock: destLock, answers: values, baseline, manifest },
     variables,
     snapshot,
   );

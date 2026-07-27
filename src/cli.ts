@@ -16,6 +16,8 @@ import { update, planUpdate } from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
 import { status, promote, extract, formatStatus } from "./reflux.js";
 import { hasState, readState, sourceOf } from "./state.js";
+import { lockfilePath, writeLock } from "./lockfile.js";
+import { checkDrift, formatDrift, hasDrift } from "./drift.js";
 import type { Values } from "./types.js";
 
 const program = new Command();
@@ -39,15 +41,77 @@ function collectSet(value: string, previous: Record<string, string> = {}) {
 program
   .command("plan")
   .argument("[dir]", "leaf overlay directory", ".")
+  .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
   .description("print the linearized layer order; write nothing")
-  .action((dir: string) => {
-    const graph = resolve(dir);
+  .action((dir: string, opts: { frozenLockfile?: boolean }) => {
+    const graph = resolve(dir, opts.frozenLockfile ? { frozen: true } : {});
     console.log("Layers (lowest → highest precedence):");
-    graph.layers.forEach((l, i) =>
-      console.log(`  ${i + 1}. ${l.manifest.name ?? l.id}`),
-    );
+    graph.layers.forEach((l, i) => {
+      const marks = [
+        l.mountPath ? `mounted at ${l.mountPath}/` : undefined,
+        l.origin?.revision ? `pinned ${shortRev(l.origin.revision)}` : undefined,
+      ].filter(Boolean);
+      const suffix = marks.length ? `  [${marks.join(", ")}]` : "";
+      console.log(`  ${i + 1}. ${l.manifest.name ?? l.id}${suffix}`);
+    });
     const vars = Object.keys(graph.variables);
     if (vars.length) console.log(`Variables: ${vars.join(", ")}`);
+    if (graph.lockDirty) {
+      console.error(
+        `\ntreelay.lock is out of date — run \`treelay lock ${dir}\` to record ` +
+          `the revisions this plan resolved.`,
+      );
+    }
+  });
+
+/** Abbreviate a commit SHA for display; package versions pass through. */
+function shortRev(rev: string): string {
+  return /^[0-9a-f]{40}$/i.test(rev) ? rev.slice(0, 12) : rev;
+}
+
+program
+  .command("lock")
+  .argument("[dir]", "leaf overlay directory", ".")
+  .option("--check", "verify the lockfile is complete and current; write nothing")
+  .option("--update", "re-resolve moving refs to their current upstream revision")
+  .option("--drift", "report refs whose upstream has moved (network)")
+  .description("resolve every layer ref and pin it in treelay.lock")
+  .action((dir: string, opts: { check?: boolean; update?: boolean; drift?: boolean }) => {
+    const graph = resolve(dir, {
+      // `--check` must not be able to *fix* what it is checking, so it resolves
+      // in the normal (non-frozen) mode and then refuses to write.
+      ...(opts.update ? { updateRefs: true } : {}),
+    });
+
+    const refs = Object.entries(graph.lock?.refs ?? {});
+    if (opts.check) {
+      if (graph.lockDirty) {
+        console.error(
+          `${lockfilePath(dir)} is out of date.\n` +
+            `Run \`treelay lock ${dir}\` and commit the result.`,
+        );
+        process.exit(1);
+      }
+      console.log(`treelay.lock is up to date (${refs.length} pinned ref(s)).`);
+    } else if (graph.lock && graph.lockDir) {
+      const wrote = writeLock(graph.lockDir, graph.lock);
+      console.log(
+        wrote
+          ? `Wrote ${lockfilePath(dir)} — ${refs.length} pinned ref(s).`
+          : `treelay.lock already current (${refs.length} pinned ref(s)).`,
+      );
+    }
+
+    for (const [ref, entry] of refs.sort()) {
+      console.log(`  ${ref}\n    → ${shortRev(entry.resolved)}  ${entry.integrity.slice(0, 21)}…`);
+    }
+
+    if (opts.drift) {
+      const reports = checkDrift(graph);
+      const text = formatDrift(reports);
+      console.log(text || "\nAll pinned refs match their upstream.");
+      if (hasDrift(reports)) process.exit(1);
+    }
   });
 
 /** Load an answers file (JSON or YAML) into a values object. */
@@ -63,12 +127,18 @@ program
   .option("--set <k=v>", "set a variable", collectSet)
   .option("--answers <file>", "answers file to seed values")
   .option("--no-prompt", "do not prompt for missing variables")
+  .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
   .description("materialize template → destination (first run = instantiate)")
   .action(
     async (
       src: string,
       dest: string,
-      opts: { set?: Values; answers?: string; prompt?: boolean },
+      opts: {
+        set?: Values;
+        answers?: string;
+        prompt?: boolean;
+        frozenLockfile?: boolean;
+      },
     ) => {
       if (hasState(dest)) {
         console.error(
@@ -77,15 +147,21 @@ program
         );
         process.exit(2);
       }
-      const graph = resolve(src);
+      const graph = resolve(src, opts.frozenLockfile ? { frozen: true } : {});
       const values = await resolveValues(graph, {
         ...(opts.answers ? { answers: loadAnswers(opts.answers) } : {}),
         ...(opts.set ? { set: opts.set } : {}),
         prompt: opts.prompt !== false,
       });
+      const gainedPins = graph.lockDirty;
       const result = await compile(graph, { destDir: dest, values });
       const n = Object.keys(result.files).length;
       console.log(`Compiled ${n} file${n === 1 ? "" : "s"} → ${dest}`);
+      // Writing the source lockfile is a side effect on a tree the user may not
+      // have expected this command to touch, so it is always announced.
+      if (gainedPins) {
+        console.log(`Recorded new pins in ${lockfilePath(src)} — commit it.`);
+      }
     },
   );
 
@@ -100,6 +176,7 @@ program
   )
   .option("--no-prompt", "do not prompt for newly-introduced variables")
   .option("--dry-run", "show what would change; write nothing")
+  .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
   .description("re-render with saved answers and 3-way merge into the project")
   .action(
     async (
@@ -109,6 +186,7 @@ program
         onConflict?: string;
         prompt?: boolean;
         dryRun?: boolean;
+        frozenLockfile?: boolean;
       },
     ) => {
       requireState(dest, "update");
@@ -122,6 +200,7 @@ program
       const options = {
         onConflict: opts.onConflict,
         ...(opts.set ? { set: opts.set } : {}),
+        ...(opts.frozenLockfile ? { frozen: true } : {}),
         prompt: opts.prompt !== false,
       } as const;
 
@@ -132,6 +211,11 @@ program
       if (plan.newVariables.length) {
         console.log(`New variables: ${plan.newVariables.join(", ")}`);
       }
+
+      // Drift is advisory and goes to stderr: this update composed from the
+      // pinned revisions, and saying so must not be mistaken for a file change.
+      const drift = formatDrift(plan.drift);
+      if (drift) console.error(drift + "\n");
 
       // Only report files the working tree actually gained, lost, or had
       // rewritten. `keep-ours`/`unchanged` write nothing, and listing them every

@@ -112,3 +112,21 @@ export {
   locksEqual,
 } from "./lockfile.js";
 export type { TreelayLock, LockEntry } from "./lockfile.js";
+export {
+  fetchLayer,
+  liveRevision,
+  verifyIntegrity,
+  cacheRoot,
+  locationKey,
+  GitFetchError,
+  NpmResolveError,
+  LockMissingError,
+  IntegrityError,
+} from "./fetch/index.js";
+export type { FetchedLayer, FetchOptions } from "./fetch/index.js";
+export { checkDrift, hasDrift, formatDrift } from "./drift.js";
+export type { DriftReport, DriftStatus } from "./drift.js";
+export { MountError } from "./resolve.js";
+export type { ResolveOptions } from "./resolve.js";
+export { mountTarget } from "./layer-files.js";
+export { hashTree } from "./hash.js";

@@ -32,8 +32,8 @@ import type {
   Values,
 } from "./types.js";
 
-/** Why a layer is in the stack (§1). */
-export type LayerRole = "parent" | "mixin" | "self";
+/** Why a layer is in the stack (§1, §3). */
+export type LayerRole = "parent" | "mixin" | "self" | "mount";
 
 /** What a contribution did to the accumulating file. */
 export type ContributionAction =
@@ -54,6 +54,12 @@ export interface LayerSummary {
   /** 1-based position, lowest precedence first. */
   position: number;
   writable: boolean;
+  /** Canonical ref this layer was fetched from (§3); absent for local layers. */
+  ref?: string;
+  /** Exact revision materialized — commit SHA or package version. */
+  revision?: string;
+  /** Subpath a mounted layer's files are re-rooted under (§3). */
+  mountPath?: string;
 }
 
 /** One layer's contribution to one output path. */
@@ -131,14 +137,27 @@ export function summarizeLayers(graph: ResolvedGraph): LayerSummary[] {
   return graph.layers.map((layer, i) => ({
     id: layer.id,
     name: displayName(layer),
-    role: layer === self ? "self" : mixinDirs.has(layer.dir) ? "mixin" : "parent",
+    role: layer.mountPath
+      ? "mount"
+      : layer === self
+        ? "self"
+        : mixinDirs.has(layer.dir)
+          ? "mixin"
+          : "parent",
     position: i + 1,
     writable: layer.writable,
+    ...(layer.origin?.ref ? { ref: layer.origin.ref } : {}),
+    ...(layer.origin?.revision ? { revision: layer.origin.revision } : {}),
+    ...(layer.mountPath ? { mountPath: layer.mountPath } : {}),
   }));
 }
 
 function displayName(layer: Layer): string {
-  return layer.manifest.name ?? basename(layer.dir);
+  // A fetched layer's directory is a cache path, which says nothing useful; its
+  // manifest name, or failing that its ref, is what a reader recognizes.
+  if (layer.manifest.name) return layer.manifest.name;
+  if (layer.mountPath) return `${layer.mountPath}/`;
+  return layer.origin?.ref ?? basename(layer.dir);
 }
 
 /** Render a path through Liquid, tolerating missing values (explain is read-only). */
@@ -423,7 +442,12 @@ export function formatExplanation(
 
   lines.push("Layers (lowest → highest precedence):");
   for (const l of result.layers) {
-    const flags = l.writable ? "" : " [read-only]";
+    const marks = [
+      l.mountPath ? `mounted at ${l.mountPath}/` : undefined,
+      l.revision ? `pinned ${shortRevision(l.revision)}` : undefined,
+      l.writable ? undefined : "read-only",
+    ].filter(Boolean);
+    const flags = marks.length ? `  [${marks.join(", ")}]` : "";
     lines.push(`  ${l.position}. ${l.name}  (${l.role})${flags}`);
   }
   lines.push("");
@@ -463,6 +487,11 @@ export function formatExplanation(
   }
 
   return lines.join("\n").trimEnd();
+}
+
+/** Commit SHAs are abbreviated for display; package versions are already short. */
+function shortRevision(rev: string): string {
+  return /^[0-9a-f]{40}$/i.test(rev) ? rev.slice(0, 12) : rev;
 }
 
 function nameOf(result: ExplainResult, id?: string): string {
