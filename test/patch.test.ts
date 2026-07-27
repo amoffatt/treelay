@@ -61,6 +61,16 @@ describe("applyPatch3Way — without a recorded base (best-effort)", () => {
       applyPatch3Way({ file: "f", current: BASE, patch: "just some prose\n" }),
     ).toThrow(/no hunks/);
   });
+
+  it("points at the hunk header when its line counts are miscounted", () => {
+    // The header claims 5 lines; the body has 4. jsdiff calls this an "invalid
+    // line", which sends people looking for a bad character instead.
+    const miscounted =
+      "@@ -1,5 +1,5 @@\n one\n two\n three\n-four\n+FOUR\n".replace("-1,5", "-1,9");
+    expect(() =>
+      applyPatch3Way({ file: "f", current: BASE, patch: miscounted }),
+    ).toThrow(/counts must match/);
+  });
 });
 
 describe("applyPatch3Way — with a recorded base (true three-way)", () => {

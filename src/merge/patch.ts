@@ -52,11 +52,18 @@ function assertParseable(file: string, patch: string): void {
   try {
     hunks = parsePatch(patch).reduce((n, p) => n + p.hunks.length, 0);
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // jsdiff reports a header/body length mismatch as "contained invalid line",
+    // which sends people hunting for a bad character instead of miscounted
+    // hunk headers — the usual mistake when a patch is written by hand.
+    const hint = /invalid line/i.test(message)
+      ? "\nCheck the `@@ -old,COUNT +new,COUNT @@` header: the counts must match " +
+        "the number of lines in the hunk body (context + removals for the first, " +
+        "context + additions for the second)."
+      : "";
     throw new MergeConflictError(
       file,
-      `patch payload is not a valid unified diff — ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `patch payload is not a valid unified diff — ${message}${hint}`,
     );
   }
   if (hunks === 0) {
