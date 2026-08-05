@@ -302,6 +302,36 @@ still local until you wire it in.
   gitignored `build/` within the source repo is supported: the destination is
   pruned from the layer walk, so recompiles never re-consume their own output.
   A destination *equal to* a layer root is refused. (SPEC §7)
+- **Tools on the build path have to be pointed at the compiled tree.** Once you
+  compose, that tree — not the source repo — is what runs and ships. Anything
+  resolving a path relative to the repo root (a script reading a config file, a
+  step stamping build metadata) keeps reading the *source* layout, and will
+  quietly read the wrong file, or none, as soon as that file is produced by
+  composition instead of sitting at the root. Pass the destination root in
+  rather than deriving it from the working directory.
+
+### Designing for overlays
+
+Overlays make patching a shared file safe; they do not make it free. Each patch
+has to survive every future edit to the file beneath it, and reflux can only
+promote it as a whole-file rewrite or a sidecar.
+
+Most patches trace to one shape: **a shared file holding a list every layer
+appends to** — a plugin registry, an entry point importing its modules, a
+permission table, a fixture enumerating what should exist. Prefer designs where
+a layer contributes **a file it owns** instead:
+
+- load modules by scanning a directory, so placement is registration
+- export a *core* set the leaf spreads into a file of its own, rather than one
+  shared constant everyone extends
+- let each entity declare its own metadata, collected on discovery, rather than
+  a central table describing all of them
+- glob per-layer fixtures and merge them, rather than maintaining one
+
+Whenever you replace an explicit list with a scan, make **finding nothing** and
+**two layers claiming one key** hard failures — an implicit registry's natural
+failure mode is silence. Full rationale and the guardrails in SPEC §4,
+*Designing to avoid patches*.
 
 ## Development
 

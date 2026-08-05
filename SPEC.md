@@ -368,6 +368,47 @@ This is deliberately *not* configurable. A layer that wants to ship VCS-adjacent
 content can name it something else; there is no legitimate case for a compiled
 instance inheriting its template's `.git`.
 
+### Designing to avoid patches **[decided]**
+
+Every strategy above is a *capability*, not a recommendation. A layer that
+patches a shared file works, and `explain` keeps it visible — but each patch is
+a standing cost: it must survive every future edit to the file underneath it,
+and reflux (§8) can only promote it as a whole-file rewrite or a sidecar.
+
+The dominant reason a layer reaches for a patch is one shape: **a shared file
+holding a list that every layer must append to.** A plugin registry, an entry
+point importing the modules it loads, a permission table, a manifest of known
+entities, a fixture enumerating what should exist. Each contribution is a line
+or two, and each forces a patch on a file the parent keeps editing.
+
+That shape can usually be removed, and removing it is cheaper than patching it
+indefinitely. Four transformations cover most cases:
+
+| Instead of | Do this | A layer then adds |
+|---|---|---|
+| a list of modules to load | scan a directory at load or build time | a file |
+| a shared constant every layer extends | export the *core* set; each leaf owns a file that spreads it and appends its own | a line in a file it owns |
+| a central table describing entities | let each entity declare its own entry, collected during discovery | nothing shared |
+| one expected-inventory fixture | glob per-layer fixtures and merge them additively | a file |
+
+The common move is that a layer's contribution becomes **a file it owns**,
+which composition handles with no strategy at all. Note the second row still
+leaves a shared file in play, but the leaf now edits *its own* file rather than
+the parent's — the seam moves to where it belongs instead of disappearing.
+
+Three guardrails, because each transformation trades an explicit list for an
+implicit one:
+
+- **Finding nothing must fail.** A scan matching no files yields a build that
+  succeeds and does nothing. That failure is silent by construction, so an
+  empty result has to be an error wherever emptiness is not genuinely valid.
+- **Collisions must fail, naming both sides.** Two layers claiming one registry
+  key is exactly the case the explicit list would have caught in review.
+- **Whatever the scan is checked against stays hand-written.** An expectation
+  derived from the tree agrees with the tree, so it never disagrees when a
+  layer's contribution silently stops being found — which is the only reason to
+  keep one.
+
 ---
 
 ## 5. Patches & three-way merge **[decided]** ✅ *implemented*
@@ -685,6 +726,14 @@ this belong?"* rather than yes/no.
 - **File-level** — promote whole files. Predictable; the v1 target.
 - **Hunk-level** — a single file's edits split across targets (the `git absorb`
   power-move). Real jump in complexity; **v2**. **[open]**
+
+The v1 constraint binds less than it appears, because the changes that most
+want hunk-level splitting are usually **additions to a shared list** — and that
+shape can generally be designed out (§4, *Designing to avoid patches*). Closing
+the seam removes the promotion altogether rather than making it more precise,
+which is the cheaper fix in both directions: the leaf stops carrying a patch,
+and the parent stops having a file that every leaf edits. Worth attempting
+before treating hunk-level reflux as the blocker.
 
 ### How a promoted change lands in the target layer
 
