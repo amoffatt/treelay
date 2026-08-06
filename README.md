@@ -45,7 +45,11 @@ See [SPEC.md §1](./SPEC.md) for the full comparison.
   so the next build reproduces it and an upstream that has moved is *reported*
   rather than silently followed.
 - **Per-file merge** — replace, deep-merge (JSON/YAML), 3-way text patch,
-  structured patch (RFC 7386/6902), append/prepend, tombstone delete.
+  structured patch (RFC 7386/6902), append/prepend, tombstone delete. Only
+  replace and deep-merge are ever picked for you; the rest happen when you ask
+  for them by name. Composition that **destroys or fabricates** content says so:
+  a file replacing an ancestor's is reported, and an `.append` with nothing to
+  append to fails the build instead of inventing the file.
 - **`.treelay` sidecars** — the canonical operation format carrying strategy, the
   recorded base (hash for drift detection, content for a true 3-way), and the
   patch payload. A patch that can't be reconciled fails the build rather than
@@ -74,8 +78,10 @@ treelay lock    [dir]          # resolve every layer ref and pin it
                                #   --check  --update  --drift
 treelay plan    [dir]          # print the linearized layer order
 treelay explain <dir> [file]   # trace file provenance (--json for machine output)
-treelay validate [dir]         # cycles, failing patches, conflicts, stale lock
+treelay validate [dir]         # cycles, failing patches, conflicts, stale lock,
+                               # same-path replacements, ops with no base file
                                #   --drift (network)  --json
+                               #   --allow-replace  --strict
 treelay watch   <src> <dest>   # recompile on change
                                #   --debounce ms  --poll
 treelay eject   <dest>         # drop .treelay state, keep the files (--dry-run)
@@ -85,9 +91,27 @@ treelay eject   <dest>         # drop .treelay state, keep the files (--dry-run)
 
 `validate` is built to be a merge gate: it reports every problem it can find in
 one pass instead of stopping at the first, exits non-zero only on real errors
-(stale pins and missing answers are warnings), and always lists the checks it
-could *not* run — a clean report that quietly skipped half of them would be
-worse than a noisy one.
+(stale pins, missing answers and same-path replacements are warnings), and always
+lists the checks it could *not* run — a clean report that quietly skipped half of
+them would be worse than a noisy one. `--strict` promotes every warning to an
+error when you want the tighter gate.
+
+It also answers the question nothing else in the toolchain does: **what did this
+composition quietly throw away?**
+
+```console
+$ treelay validate ./layers/service
+! shadowed-replace: 1 file(s) replace an ancestor's, discarding it:
+  .gitignore  service replaces core
+    Use `.append` to extend the inherited file instead, declare the intent with a
+    manifest `merge` glob ("path": "replace"), or pass --allow-replace …
+```
+
+A descendant's `.gitignore` **replaces** its ancestor's rather than concatenating
+onto it — so a layer author adding `dist/` to their own copy silently drops the
+base layer's `*.tfstate` and `**/secrets.tfvars` lines from that deployment.
+Write `.gitignore.append` to extend an inherited file. Declaring the strategy in
+a manifest `merge` glob marks a replacement as deliberate and stops reporting it.
 
 `eject` is one-way. It deletes the baseline that makes `update` a three-way
 merge rather than a guess, and nothing in the output can reconstruct it, so
@@ -161,11 +185,22 @@ template can keep evolving after the project exists.
 ```console
 $ treelay update ./my-service
 New variables: region
-  U  .github/workflows/ci.yml      # you never touched it — updated cleanly
+  T  .github/workflows/ci.yml      # you never touched it — took the template's
   M  pipeline.yml                  # both changed, merged
   D  legacy.cfg                    # template dropped it, you hadn't edited it
   … 2 file(s) with local edits left as-is.
+  (D = deleted, M = merged with your edits, T = took the template's version)
 ```
+
+`T` is *took theirs* — you never touched the file, so it advanced cleanly. It is
+deliberately **not** git's `U`, which means *unmerged* and needs your hands.
+`C` is the only mark here that means stop.
+
+Note that `update` and `status` speak different vocabularies on purpose.
+`treelay status` answers "what did *I* change" and so mirrors git (`M`/`A`/`D`
+with their git meanings). `update` answers "what did the *template* change", a
+question git has no verbs for — so it uses its own letters and prints a legend
+under every run rather than assuming you remember them.
 
 Update reloads the answers it was built with and asks **only** about variables
 the new template version introduced. Files you created yourself are never
@@ -328,10 +363,21 @@ a layer contributes **a file it owns** instead:
   a central table describing all of them
 - glob per-layer fixtures and merge them, rather than maintaining one
 
+Prose is the honest exception. A deploy guide or README genuinely *is* one
+document with a section per layer, and there is no scan that assembles it — so
+`core/DEPLOYMENT.md` plus a `DEPLOYMENT.md.append` in each descendant is the right
+shape, and it composes across arbitrarily deep chains with no extra machinery.
+The one rule: **some layer has to ship the base file.** If nothing does, the
+build fails rather than emitting a document that starts halfway through, so
+renaming `core/DEPLOYMENT.md` breaks loudly instead of silently shipping four
+deployments a guide beginning mid-sentence.
+
 Whenever you replace an explicit list with a scan, make **finding nothing** and
 **two layers claiming one key** hard failures — an implicit registry's natural
-failure mode is silence. Full rationale and the guardrails in SPEC §4,
-*Designing to avoid patches*.
+failure mode is silence. treelay holds itself to the same rule: an op with
+nothing to operate on fails, and a file quietly replacing an ancestor's is
+reported. Full rationale and the guardrails in SPEC §4, *Designing to avoid
+patches*.
 
 ## Development
 

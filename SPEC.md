@@ -282,13 +282,25 @@ than done silently.
 
 When the same relative path exists in N layers:
 
-| Strategy            | Default for             | Mechanism                                  |
-|---------------------|-------------------------|--------------------------------------------|
-| **replace**         | binary / unknown        | higher layer wins wholesale                |
-| **deep-merge**      | JSON / YAML / TOML      | recursive merge (array policy configurable)|
-| **patch**           | text                    | apply unified diff onto inherited file     |
-| **append / prepend**| `.gitignore`, logs      | concatenate                                |
-| **delete (tombstone)** | —                    | whiteout an inherited file                 |
+| Strategy            | Applies by default to    | Mechanism                                  |
+|---------------------|--------------------------|--------------------------------------------|
+| **replace**         | **text, binary, unknown**| higher layer wins wholesale                |
+| **deep-merge**      | JSON / YAML / TOML       | recursive merge (array policy configurable)|
+| **patch**           | *never a default*        | apply unified diff onto inherited file     |
+| **append / prepend**| *never a default*        | concatenate                                |
+| **delete (tombstone)** | *never a default*     | whiteout an inherited file                 |
+
+> **Read the first column as "what happens if you do nothing", not "what these
+> file types are for".** Only `replace` and `deep-merge` are ever chosen for you.
+> `patch`, `append`, `prepend` and `delete` happen **only** when you ask for them
+> by name — via a manifest `merge` glob, a filename suffix, or a sidecar.
+>
+> In particular, **`.gitignore` does not concatenate by default; it replaces.** A
+> descendant shipping its own `.gitignore` silently discards its ancestor's
+> every rule, which is how a base layer's `*.tfstate` and `**/secrets.tfvars`
+> lines can vanish from a deployment. Write `.gitignore.append` to extend an
+> inherited ignore file — that is nearly always what you want. `treelay validate`
+> reports every same-path replacement for exactly this reason (below).
 
 Strategy is chosen three ways, in increasing power:
 
@@ -367,6 +379,90 @@ content and compose normally.
 This is deliberately *not* configurable. A layer that wants to ship VCS-adjacent
 content can name it something else; there is no legitimate case for a compiled
 instance inheriting its template's `.git`.
+
+### Destroying and fabricating content are reported **[decided]** ✅ *implemented*
+
+Two things composition can do are destructive or fabricating, and both used to
+be reported nowhere: `compile` printed a file count, `validate` said the tree was
+valid, and only `explain` — which you have to already suspect a file to ask —
+knew. Both failure modes are **absence**, which is the hardest thing to notice:
+the tree still compiles, the tests still pass, the content is simply not there.
+
+**1. Same-path replacement is reported.** When a descendant ships a file at a
+path an ancestor also ships, the ancestor's content is discarded (that is what
+`replace` means, and it is often correct). `treelay validate` now lists every
+such path as a **warning**:
+
+```
+! shadowed-replace: 2 file(s) replace an ancestor's, discarding it:
+  .gitignore     child replaces base
+  DEPLOYMENT.md  service replaces platform
+```
+
+`compile` prints a one-line count on stderr — the detail lives in `validate`,
+because a per-file report on every build is how status output becomes wallpaper.
+Three ways to make the signal go away, in order of preference:
+
+- use `.append` to extend the inherited file instead of shadowing it;
+- **declare the intent** with a manifest `merge` glob (`{"DEPLOYMENT.md":
+  "replace"}`), which marks that one path as deliberate and is not reported;
+- pass `--allow-replace` to silence the check wholesale.
+
+An explicit `.treelay` sidecar with `op: replace` is likewise never reported —
+the author has already said so. A warning nobody can silence legitimately is a
+warning everyone learns to ignore, which is why the declaration exists.
+
+Replacement is a **warning, not an error**: exit status stays 0 so `validate`
+remains usable as a merge gate. A repo that has decided the invariant holds —
+no layer shadows an ancestor's path, ever — enforces it in CI with
+`treelay validate --strict`, which promotes every warning to an error.
+
+**2. An op with no inherited file is an error.** `append`, `prepend`, `patch`
+and `merge` all modify an *inherited* file. With nothing to inherit there is no
+`super()` to call, so `compile` **fails** rather than producing the file from the
+fragment alone:
+
+```
+Nothing to append in DEPLOYMENT.md: no lower layer produces that file, so this
+append has nothing to apply to — it was never created, or a tombstone removed it.
+  declared by: DEPLOYMENT.md.append
+```
+
+This is what makes a composed document safe to split across layers. A deploy
+guide assembled from `core/DEPLOYMENT.md` plus four `DEPLOYMENT.md.append`
+fragments used to degrade silently if core's file were renamed: every downstream
+tree shipped a guide starting mid-sentence at whichever fragment sorted first,
+and nothing in the build objected. Now the rename fails the build.
+
+`replace` and `delete` are exempt and always have been: replacing nothing is a
+create, tombstoning an absent file is a no-op, and both are spelled out in the
+source filename. Neither loses content.
+
+`validate` reports **every** orphan op at once rather than dying on the first,
+since producing a report rather than a tree is the whole point of that command.
+
+### Ordering and emptiness — two things worth stating **[decided]**
+
+**Multi-parent `.append` order is defined.** Fragments apply in linearization
+order, lowest precedence → highest (§3), so with a diamond where two parents both
+contribute `<file>.append` the order follows the leaf's `parents` list. Since
+**earlier in `parents` = higher precedence**, the *last*-listed parent's fragment
+lands first and the *first*-listed parent's lands last:
+
+```jsonc
+// leaf: parents ["a", "b"]  →  BASE, then b's fragment, then a's
+// leaf: parents ["b", "a"]  →  BASE, then a's fragment, then b's
+```
+
+This is fully determined by the manifest — reorder `parents` to reorder the
+fragments. It is not sorted by filename, and it does not depend on directory
+iteration order.
+
+**Empty directories do not materialize.** Composition is file-based: a layer's
+empty directory produces nothing in the output, and a directory exists in a
+compiled tree exactly when some file lands inside it. A tree that needs a
+directory to be present before a tool writes into it should ship a
+`.gitkeep` (or any placeholder file) inside it.
 
 ### Designing to avoid patches **[decided]**
 
@@ -641,6 +737,33 @@ Per-file three-way merge:
 - file gone in ours, changed in theirs → conflict (don't silently resurrect it)
 - file new in theirs, already present in ours → conflict (the user got there first)
 
+#### Status marks — `update` is not `git status` **[decided]** ✅ *implemented*
+
+Each file that changed is printed with a one-letter mark, followed by a legend
+covering only the letters that appeared:
+
+| Mark | Resolution | Meaning |
+|---|---|---|
+| **T** | `take-theirs` | you never touched it; took the template's version |
+| **M** | `merged`      | both changed, merged cleanly with your edits |
+| **C** | `conflict`    | both changed incompatibly — **the only mark that means stop** |
+| **D** | `delete`      | the template dropped it and you had not edited it |
+
+`keep-ours` and `unchanged` are deliberately unmarked: they write nothing, and
+listing them every run buries the handful that moved.
+
+**`T`, not `U`.** treelay echoes git's vocabulary in `status` (§8), where `M`/`A`/`D`
+carry their git meanings — so a reader reasonably brings that frame here too. But
+in git `U` means **unmerged**: a conflict needing hands. Marking `take-theirs` —
+the calmest outcome there is — with the letter that means "stop" sent a real
+release check off to investigate a clean update, and that is precisely how people
+learn to skim past status output. The two most alarming-looking letters must not
+be swapped relative to expectation, so the mark is `T` (theirs) and `C` remains
+the only one that warrants attention.
+
+The marks are one exported table (`RESOLUTION_MARKS`, `MARK_MEANINGS`), not a
+string in a formatter, so the vocabulary is testable and cannot drift.
+
 **Text first, then structure.** For JSON/YAML the line merge is tried *before*
 the structured one, because it preserves formatting and comments. Only when it
 conflicts do we retry as merge patches, where two sides adding unrelated keys
@@ -856,8 +979,9 @@ re-templatization assist is **[open]**.
 ## 9. CLI surface
 
 ```
-treelay compile <src> <dest> [--set k=v] [--answers f] [--no-prompt]
+treelay compile <src> <dest> [--set k=v] [--answers f] [--no-prompt] [--allow-replace]
                                # materialize template → destination (first run = instantiate)
+                               #   --allow-replace  do not report same-path replacements (§4)
 treelay update  <dest> [--set k=v]   # re-render with saved answers (prompt only new vars) + 3-way merge
 treelay status  <dest> [--json]  # list changes vs baseline, annotated with producing layer
 treelay diff    <dest|a> [b]   # working-vs-baseline hunks, or layer-vs-layer
@@ -878,7 +1002,11 @@ treelay explain <dir> [file] [--set k=v] [--answers f] [--json]
                                # <dir> = a source layer, or a compiled destination
                                # omit [file] to explain every path in the composition
 treelay validate [dir] [--set k=v] [--answers f] [--drift] [--json]
+                        [--allow-replace] [--strict]
                                # cycles? patches apply? unresolved conflicts? drift vs lock?
+                               # same-path replacements? ops with no inherited file? (§4)
+                               #   --allow-replace  skip the replacement check
+                               #   --strict         treat every warning as an error (CI gate)
 treelay watch   <src> <dest> [--set k=v] [--debounce ms] [--poll]
                                # recompile on change
 treelay eject   <dest> [--dry-run]
@@ -893,8 +1021,10 @@ and both refuse read-only or shadowed targets with a clear explanation.
 `validate` **collects** rather than stopping at the first problem: it is
 producing a report, not an artifact, so a finding only suppresses the checks
 that genuinely cannot run without it, and whatever went unchecked is always
-stated. Errors exit non-zero; warnings (stale pins, missing answers) do not, so
-it can be a merge gate. `watch` re-resolves the whole graph on every pass —
+stated. Errors exit non-zero; warnings (stale pins, missing answers, same-path
+replacements) do not, so it can be a merge gate — and `--strict` promotes every
+warning to an error for repos that want the stricter gate.
+`watch` re-resolves the whole graph on every pass —
 editing a manifest can reshape the layer stack, so nothing from the previous
 pass can be assumed still valid. `eject` is one-way: the baseline it removes is
 the merge base `update` needs, and no part of the output can reconstruct it.
@@ -920,8 +1050,14 @@ writeLock(graph.lockDir, graph.lock);          // what `treelay lock` does
 const drift = checkDrift(graph);               // [{ ref, requested, locked, current, status }]
 
 const values = await resolveValues(graph, { answers, set, prompt });  // §6 steps 3–4
-const result = await compile(graph, { destDir, values });
+const audit  = emptyAudit();
+const result = await compile(graph, { destDir, values, audit });
 // result.files[path] = { fromLayer, strategy, patchedFrom, owned }  ← powers `explain`
+// audit.replacements = [{ path, by, over, source }]   ← §4, what this compose discarded
+// audit.orphanOps    = [{ path, op, by, source }]     ← only under onOrphanOp: "collect"
+//   compile throws OrphanOpError on the first orphan op; `validate` composes with
+//   { onOrphanOp: "collect" } to report all of them instead. This is the hook for
+//   a repo that wants to assert its own invariant ("no layer shadows an ancestor").
 
 const why  = await explain(graph, { values });  // no output I/O; read-only provenance
 // why.layers    = [{ id, name, role: parent|mixin|self, position, writable }]
@@ -972,9 +1108,28 @@ const reach = blastRadius(layerDir, { searchRoot });           // who else consu
   **[decided]** (§2, §3)
 - **npm pins are recorded, not enforced** — installation stays the package
   manager's job; git pins *are* enforced from treelay's own cache. **[decided]** (§3)
-- **Reflux into mounted layers** — a mount's output paths carry a prefix its
-  sources do not, so promotion into one needs a path mapping that does not exist
-  yet; read-only for now. **[open]**
+- **Reflux into a mount's own source tree** — a mount's output paths carry a
+  prefix its sources do not, so writing back *into the mounted repo* needs a path
+  mapping that does not exist yet. Promotion **into a writable layer above the
+  mount** does work today and needs no mapping, because that layer composes at the
+  root and so shares the mount's prefixed paths (§8, verified against 0.2.x):
+
+  ```console
+  $ treelay promote ./out packages/core/index.ts
+  Cannot promote into vendor: the layer is read-only.
+  Promote into a writable layer above it, or capture the change as a patch there (§8).
+
+  $ treelay promote ./out packages/core/index.ts --to leaf
+  Promoted into leaf:
+    patch     packages/core/index.ts  → packages/core/index.ts.treelay
+  Round-trip verified: the destination reproduces from the template.
+  ```
+
+  The refusal is a clean read-only error, not a mis-targeted write — a mount's
+  source tree is never silently modified. Note that promoting a *whole-file*
+  rewrite this way shadows the mount's copy at that path, which `validate` will
+  then report as a replacement (§4); the sidecar-patch form above does not.
+  **[partially open]**
 - **Virtual/FUSE mode** — deferred; materialize-first is **[decided]**. Revisit later for dev loops.
 
 ---

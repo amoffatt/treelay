@@ -11,7 +11,13 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { resolve } from "../src/resolve.js";
 import { compile } from "../src/compile.js";
-import { update, planUpdate } from "../src/update.js";
+import {
+  update,
+  planUpdate,
+  markLegend,
+  RESOLUTION_MARKS,
+  MARK_MEANINGS,
+} from "../src/update.js";
 import { mergeText3 } from "../src/merge/patch.js";
 import { readState, statePaths } from "../src/state.js";
 
@@ -357,6 +363,51 @@ describe("update — baseline bookkeeping", () => {
     expect(second.conflicts).toEqual([]);
     expect(second.files["app.txt"]).toBe("keep-ours");
     expect(read("app.txt")).toBe("alpha\nRESOLVED\ngamma\n");
+  });
+});
+
+describe("status marks — the vocabulary printed under an update (§7)", () => {
+  it("marks a clean take-theirs `T`, never git's `U`", async () => {
+    // `U` means *unmerged* in git — a conflict needing hands. Using it for the
+    // calmest outcome there is cost a release check real time, and is exactly
+    // how people learn to ignore status output.
+    expect(RESOLUTION_MARKS["take-theirs"]).toBe("T");
+    expect(Object.values(RESOLUTION_MARKS)).not.toContain("U");
+  });
+
+  it("keeps `C` as the only mark that means stop", async () => {
+    expect(RESOLUTION_MARKS.conflict).toBe("C");
+  });
+
+  it("writes nothing for resolutions that change no file", async () => {
+    expect(RESOLUTION_MARKS["keep-ours"]).toBeUndefined();
+    expect(RESOLUTION_MARKS.unchanged).toBeUndefined();
+  });
+
+  it("explains every mark it can print", async () => {
+    for (const mark of Object.values(RESOLUTION_MARKS)) {
+      expect(MARK_MEANINGS[mark!]).toBeTruthy();
+    }
+  });
+
+  it("legends only the marks actually printed, de-duplicated and sorted", async () => {
+    expect(markLegend(["T", "M", "T"])).toBe(
+      "M = merged with your edits, T = took the template's version",
+    );
+    expect(markLegend([])).toBe("");
+  });
+
+  it("gives a clean upstream-only change the T mark end to end", async () => {
+    const leaf = layer("leaf", { "app.txt": "v1\n" });
+    await first(leaf);
+    layer("leaf", { "app.txt": "v2\n" }); // only the template moved
+
+    const plan = await update(dest());
+
+    expect(plan.files["app.txt"]).toBe("take-theirs");
+    expect(RESOLUTION_MARKS[plan.files["app.txt"]!]).toBe("T");
+    expect(read("app.txt")).toBe("v2\n");
+    expect(read("app.txt")).not.toContain("<<<<<<<");
   });
 });
 

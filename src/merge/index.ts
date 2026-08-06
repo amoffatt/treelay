@@ -21,13 +21,29 @@ export function defaultStrategy(path: string): MergeStrategy {
   return "replace";
 }
 
+/**
+ * The strategy a manifest `merge` glob *declares* for a path, if any (§4).
+ *
+ * Split out from {@link strategyFor} because "replace, because the author said
+ * so" and "replace, because that is the fallback" are the same byte-level
+ * behaviour but opposite intents. Only the second is worth reporting when a
+ * higher layer silently discards an ancestor's file, so the audit needs to tell
+ * them apart — and matching globs in exactly one place is what keeps it honest.
+ */
+export function declaredStrategy(
+  path: string,
+  globs: Record<string, MergeStrategy> = {},
+): MergeStrategy | undefined {
+  for (const [glob, strategy] of Object.entries(globs)) {
+    if (picomatch.isMatch(path, glob)) return strategy;
+  }
+  return undefined;
+}
+
 /** Resolve the strategy for a path given the manifest `merge` globs (§4). */
 export function strategyFor(
   path: string,
   globs: Record<string, MergeStrategy> = {},
 ): MergeStrategy {
-  for (const [glob, strategy] of Object.entries(globs)) {
-    if (picomatch.isMatch(path, glob)) return strategy;
-  }
-  return defaultStrategy(path);
+  return declaredStrategy(path, globs) ?? defaultStrategy(path);
 }

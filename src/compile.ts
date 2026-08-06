@@ -13,8 +13,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import fg from "fast-glob";
 
-import { MergeConflictError } from "./errors.js";
+import { MergeConflictError, OrphanOpError } from "./errors.js";
 import { hashContent } from "./hash.js";
+import type { ComposeAudit, OrphanOp } from "./audit.js";
 import { applyPatch3Way } from "./merge/patch.js";
 import { renderString, templateTarget, DEFAULT_TEMPLATE_SUFFIX } from "./render.js";
 import {
@@ -24,8 +25,19 @@ import {
   desugarSuffix,
   SIDECAR_SUFFIX,
 } from "./sidecar.js";
-import { strategyFor, deepMerge, applyMergePatch, applyJsonPatch } from "./merge/index.js";
-import { ALWAYS_IGNORE, destExclusions, mountTarget } from "./layer-files.js";
+import {
+  declaredStrategy,
+  defaultStrategy,
+  deepMerge,
+  applyMergePatch,
+  applyJsonPatch,
+} from "./merge/index.js";
+import {
+  ALWAYS_IGNORE,
+  destExclusions,
+  displayName,
+  mountTarget,
+} from "./layer-files.js";
 import { parseStructured, stringifyStructured } from "./serde.js";
 import { writeLock } from "./lockfile.js";
 import {
@@ -56,8 +68,55 @@ export interface CompileOptions {
    * A frozen resolve never gets here — it fails on the unpinned ref instead.
    */
   writeLockfile?: boolean;
+  /**
+   * Collector for the structural findings of the compose (§4) — undeclared
+   * replacements and, under `collect`, orphan ops. Omit to skip the bookkeeping.
+   */
+  audit?: ComposeAudit;
 }
 
+/** How a compose treats the two things it can do that destroy content (§4). */
+export interface ComposeOptions {
+  /**
+   * What to do with an op whose target no lower layer produces.
+   *
+   * `throw` (the default) refuses to build: an `append` with nothing to append
+   * to used to fabricate the file from the fragment alone, so a rename in a base
+   * layer silently shipped every downstream tree a document beginning mid-
+   * sentence. `collect` records the finding and skips the op instead, which is
+   * what lets `validate` report *every* orphan rather than dying on the first.
+   */
+  onOrphanOp?: "throw" | "collect";
+  /** Where to accumulate findings; omit to skip the bookkeeping entirely. */
+  audit?: ComposeAudit;
+}
+
+/**
+ * Per-compose state that every layer needs and no single layer owns.
+ *
+ * Threaded rather than global so two composes can run concurrently — `update`
+ * and `verify` both compose in memory while a real one may be in flight.
+ */
+interface ComposeContext {
+  /** Layer id → display name, so a finding reads as prose, not as a cache path. */
+  names: Map<string, string>;
+  onOrphanOp: "throw" | "collect";
+  audit?: ComposeAudit;
+}
+
+/**
+ * Ops that modify an inherited file, and therefore require one to exist (§4).
+ *
+ * `replace` and `delete` are absent deliberately: replacing nothing is a create,
+ * and tombstoning an absent file is a no-op. Neither loses content, and both are
+ * spelled out in the source filename, so neither is a surprise.
+ */
+const REQUIRES_INHERITED: ReadonlySet<SidecarOpKind> = new Set([
+  "append",
+  "prepend",
+  "patch",
+  "merge",
+]);
 
 /**
  * One accumulated output file as it builds up across the layer stack. Also the
@@ -74,6 +133,8 @@ export interface FileEntry {
 interface Op {
   kind: SidecarOpKind;
   target: string;
+  /** The op's own path within its layer — the only pointable thing in a report. */
+  source: string;
   when?: string;
   render: boolean;
   content?: string;
@@ -105,10 +166,16 @@ export async function composeFiles(
   graph: ResolvedGraph,
   values: Values = {},
   destDir?: string,
+  options: ComposeOptions = {},
 ): Promise<Map<string, FileEntry>> {
   const acc = new Map<string, FileEntry>();
+  const ctx: ComposeContext = {
+    names: new Map(graph.layers.map((l) => [l.id, displayName(l)])),
+    onOrphanOp: options.onOrphanOp ?? "throw",
+    ...(options.audit ? { audit: options.audit } : {}),
+  };
   for (const layer of graph.layers) {
-    await applyLayer(layer, acc, values, destDir);
+    await applyLayer(layer, acc, values, ctx, destDir);
   }
   return acc;
 }
@@ -142,7 +209,9 @@ export async function compile(
   options: CompileOptions,
 ): Promise<CompileResult> {
   const values = options.values ?? {};
-  const acc = await composeFiles(graph, values, options.destDir);
+  const acc = await composeFiles(graph, values, options.destDir, {
+    ...(options.audit ? { audit: options.audit } : {}),
+  });
 
   // Compose fully before writing anything: a conflict partway through must not
   // leave a half-built destination behind (§5).
@@ -177,11 +246,11 @@ async function applyLayer(
   layer: Layer,
   acc: Map<string, FileEntry>,
   values: Values,
+  ctx: ComposeContext,
   destDir?: string,
 ): Promise<void> {
   const suffix = layer.manifest.templateSuffix ?? DEFAULT_TEMPLATE_SUFFIX;
   const renderAllText = layer.manifest.render === "all-text";
-  const arrays = layer.manifest.arrays ?? "replace";
 
   const entries = fg.sync("**/*", {
     cwd: layer.dir,
@@ -207,6 +276,7 @@ async function applyLayer(
     if (isSidecar(inner)) {
       const op = sidecarToOp(raw.toString("utf8"), inner, isTmpl, values);
       op.target = mountTarget(layer, op.target);
+      op.source = rel;
       ops.push(op);
       continue;
     }
@@ -216,6 +286,7 @@ async function applyLayer(
       ops.push({
         kind: sugar.op,
         target: mountTarget(layer, await renderPath(sugar.target, values)),
+        source: rel,
         render: isTmpl,
         content: raw.toString("utf8"),
       });
@@ -235,10 +306,10 @@ async function applyLayer(
       ? Buffer.from(await renderString(raw.toString("utf8"), values), "utf8")
       : raw;
 
-    mergeFile(acc, target, data, layer, arrays);
+    mergeFile(acc, target, data, layer, rel, ctx);
   }
 
-  for (const op of ops) await applyOp(acc, op, values);
+  for (const op of ops) await applyOp(acc, op, values, layer, ctx);
 }
 
 /** Render a relative path through Liquid when it carries markup. */
@@ -257,6 +328,9 @@ function sidecarToOp(
   const op: Op = {
     kind: sc.op,
     target: sidecarTarget(innerPath),
+    // Overwritten by the caller, which knows the on-disk path; a sidecar's inner
+    // name is post-template-strip and so is not a real file.
+    source: innerPath,
     render: sc.render ?? false,
   };
   if (sc.when !== undefined) op.when = sc.when;
@@ -278,9 +352,12 @@ function mergeFile(
   target: string,
   data: Buffer,
   layer: Layer,
-  arrays: Layer["manifest"]["arrays"],
+  source: string,
+  ctx: ComposeContext,
 ): void {
-  const strategy = strategyFor(target, layer.manifest.merge);
+  const arrays = layer.manifest.arrays ?? "replace";
+  const declared = declaredStrategy(target, layer.manifest.merge);
+  const strategy = declared ?? defaultStrategy(target);
   const existing = acc.get(target);
 
   if (!existing) {
@@ -290,6 +367,18 @@ function mergeFile(
 
   switch (strategy) {
     case "replace":
+      // The ancestor's bytes are discarded right here, and nothing downstream
+      // can tell they ever existed — so this is the one place that can say so.
+      // A `merge` glob naming this path is the author declaring the intent, and
+      // is not worth reporting; falling through to the default is.
+      if (!declared) {
+        ctx.audit?.replacements.push({
+          path: target,
+          by: ctx.names.get(layer.id) ?? layer.id,
+          over: ctx.names.get(existing.fromLayer) ?? existing.fromLayer,
+          source,
+        });
+      }
       existing.data = data;
       existing.fromLayer = layer.id;
       existing.strategy = strategy;
@@ -341,6 +430,8 @@ async function applyOp(
   acc: Map<string, FileEntry>,
   op: Op,
   values: Values,
+  layer: Layer,
+  ctx: ComposeContext,
 ): Promise<void> {
   if (op.when !== undefined) {
     const w = (await renderString(op.when, values)).trim();
@@ -348,11 +439,32 @@ async function applyOp(
   }
 
   const existing = acc.get(op.target);
+
+  // An op modifies an inherited file. With nothing to inherit there is no
+  // super() to call, so producing the file from the fragment alone would ship a
+  // document that starts halfway through — the honest answers are "fail" or, for
+  // `validate`, "record it and keep checking".
+  if (!existing && REQUIRES_INHERITED.has(op.kind)) {
+    if (ctx.onOrphanOp === "throw") {
+      throw new OrphanOpError(op.target, op.kind, op.source);
+    }
+    const finding: OrphanOp = {
+      path: op.target,
+      op: op.kind,
+      by: ctx.names.get(layer.id) ?? layer.id,
+      source: op.source,
+    };
+    ctx.audit?.orphanOps.push(finding);
+    return;
+  }
+
   const content =
     op.content !== undefined && op.render
       ? await renderString(op.content, values)
       : op.content;
 
+  // Ops that need no base: tombstoning an absent file is a no-op, and replacing
+  // one is a create. Both are harmless and both are spelled out in the filename.
   switch (op.kind) {
     case "delete":
       acc.delete(op.target);
@@ -373,52 +485,40 @@ async function applyOp(
       }
       return;
     }
+  }
 
+  // Everything below modifies inherited content, and the guard above has already
+  // established that there is some — so the base is definite rather than
+  // defaulted, which is what stops a fragment from becoming a whole file.
+  if (!existing) return;
+
+  switch (op.kind) {
     case "append":
     case "prepend": {
       const add = Buffer.from(content ?? "", "utf8");
-      const base = existing?.data ?? Buffer.alloc(0);
-      const data =
+      existing.data =
         op.kind === "append"
-          ? Buffer.concat([base, add])
-          : Buffer.concat([add, base]);
-      if (existing) {
-        existing.data = data;
-        existing.patchedFrom.push("sidecar");
-      } else {
-        acc.set(op.target, {
-          data,
-          strategy: op.kind,
-          fromLayer: "sidecar",
-          patchedFrom: [],
-        });
-      }
+          ? Buffer.concat([existing.data, add])
+          : Buffer.concat([add, existing.data]);
+      existing.patchedFrom.push("sidecar");
       return;
     }
 
     case "merge": {
       // Structured patch (RFC 7386 merge / RFC 6902 json-patch) onto the file.
-      const baseData = existing
-        ? parseStructured(op.target, existing.data.toString("utf8"))
-        : {};
+      const baseData = parseStructured(op.target, existing.data.toString("utf8"));
       const result = op.jsonPatch
         ? applyJsonPatch(baseData, op.jsonPatch)
         : applyMergePatch(baseData, op.merge ?? {});
-      setStructured(acc, op, existing, result);
+      existing.data = Buffer.from(
+        stringifyStructured(op.target, result),
+        "utf8",
+      );
+      existing.patchedFrom.push("sidecar");
       return;
     }
 
     case "patch": {
-      // A patch edits an inherited file; with nothing to inherit there is no
-      // "super()" to call, so this is an authoring error, not a silent create.
-      if (!existing) {
-        throw new MergeConflictError(
-          op.target,
-          "patch has nothing to apply to — the file is not produced by any " +
-            "lower layer (never created, or removed by a tombstone). " +
-            "Ship the full file instead of a patch, or drop the tombstone.",
-        );
-      }
       const current = existing.data.toString("utf8");
       existing.data = Buffer.from(
         applyPatch3Way({
@@ -464,27 +564,6 @@ function resolvePatchBase(op: Op, current: string): { base?: string } {
     return { base: current };
   }
   return {};
-}
-
-/** Write a structured (parsed) value back into the accumulator. */
-function setStructured(
-  acc: Map<string, FileEntry>,
-  op: Op,
-  existing: FileEntry | undefined,
-  value: unknown,
-): void {
-  const data = Buffer.from(stringifyStructured(op.target, value), "utf8");
-  if (existing) {
-    existing.data = data;
-    existing.patchedFrom.push("sidecar");
-  } else {
-    acc.set(op.target, {
-      data,
-      strategy: "deep-merge",
-      fromLayer: "sidecar",
-      patchedFrom: [],
-    });
-  }
 }
 
 /** Coarse text/binary guess by extension, for `render: all-text` mode. */

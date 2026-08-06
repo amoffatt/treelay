@@ -9,6 +9,7 @@ export {
   CycleError,
   InconsistentHierarchyError,
   MergeConflictError,
+  OrphanOpError,
   NotImplementedError,
 } from "./errors.js";
 
@@ -25,6 +26,7 @@ export {
 } from "./sidecar.js";
 export {
   strategyFor,
+  declaredStrategy,
   defaultStrategy,
   deepMerge,
   applyPatch3Way,
@@ -40,7 +42,14 @@ export type {
 } from "./merge/patch.js";
 export { hashContent, matchesHash } from "./hash.js";
 export { compile, composeFiles, summarize } from "./compile.js";
-export type { FileEntry } from "./compile.js";
+export type { FileEntry, CompileOptions, ComposeOptions } from "./compile.js";
+export {
+  emptyAudit,
+  auditIsClean,
+  describeReplacements,
+  describeOrphanOps,
+} from "./audit.js";
+export type { ComposeAudit, Replacement, OrphanOp } from "./audit.js";
 export {
   readState,
   writeState,
@@ -56,6 +65,7 @@ export {
   SelfCompileError,
   classifyEntry,
   destExclusions,
+  displayName,
   enumerateLayer,
   listLayerFiles,
 } from "./layer-files.js";
@@ -66,7 +76,13 @@ export {
   formatExplanation,
   summarizeLayers,
 } from "./explain.js";
-export { update, planUpdate } from "./update.js";
+export {
+  update,
+  planUpdate,
+  markLegend,
+  RESOLUTION_MARKS,
+  MARK_MEANINGS,
+} from "./update.js";
 export type { UpdateOptions, UpdatePlan, Resolution } from "./update.js";
 export { status, promote, extract, formatStatus } from "./reflux.js";
 export type {

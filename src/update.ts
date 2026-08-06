@@ -49,6 +49,44 @@ export type Resolution =
   /** All three sides agree — nothing to do. Lets a no-op update say so. */
   | "unchanged";
 
+/**
+ * Display mark for each resolution that changes the working tree (§7).
+ *
+ * `keep-ours` and `unchanged` are absent deliberately: they write nothing, and
+ * listing them every run buries the handful that moved.
+ *
+ * **`T`, not `U`, for take-theirs.** Git is every reader's reference frame, and
+ * in git `U` means *unmerged* — a conflict needing hands. Marking the cleanest
+ * outcome there is with the letter that means "stop" sent one release check off
+ * to investigate a non-problem, and that is how people learn to skip status
+ * output entirely. `C` is the only mark here that means stop.
+ */
+export const RESOLUTION_MARKS: Readonly<Partial<Record<Resolution, string>>> = {
+  "take-theirs": "T",
+  merged: "M",
+  conflict: "C",
+  delete: "D",
+};
+
+/** What each mark means, for the legend printed under a run. */
+export const MARK_MEANINGS: Readonly<Record<string, string>> = {
+  T: "took the template's version",
+  M: "merged with your edits",
+  C: "conflict",
+  D: "deleted",
+};
+
+/**
+ * A one-line legend covering only the marks actually printed.
+ *
+ * Status codes are exactly the kind of output people learn to skim, and one line
+ * is cheaper than a reader mapping `T` onto whatever their last tool meant by it.
+ */
+export function markLegend(marks: readonly string[]): string {
+  const shown = [...new Set(marks)].sort();
+  return shown.map((m) => `${m} = ${MARK_MEANINGS[m]}`).join(", ");
+}
+
 export interface UpdateOptions {
   /**
    * How conflicts are surfaced:

@@ -16,9 +16,14 @@
  */
 
 import { readFileSync } from "node:fs";
-import { basename, join, resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 
-import { enumerateLayer, mountTarget, type LayerEntry } from "./layer-files.js";
+import {
+  displayName,
+  enumerateLayer,
+  mountTarget,
+  type LayerEntry,
+} from "./layer-files.js";
 import { parseSidecar } from "./sidecar.js";
 import { renderString } from "./render.js";
 import { strategyFor } from "./merge/index.js";
@@ -162,14 +167,6 @@ export function summarizeLayers(graph: ResolvedGraph): LayerSummary[] {
     ...(layer.origin?.revision ? { revision: layer.origin.revision } : {}),
     ...(layer.mountPath ? { mountPath: layer.mountPath } : {}),
   }));
-}
-
-function displayName(layer: Layer): string {
-  // A fetched layer's directory is a cache path, which says nothing useful; its
-  // manifest name, or failing that its ref, is what a reader recognizes.
-  if (layer.manifest.name) return layer.manifest.name;
-  if (layer.mountPath) return `${layer.mountPath}/`;
-  return layer.origin?.ref ?? basename(layer.dir);
 }
 
 /** Render a path through Liquid, tolerating missing values (explain is read-only). */

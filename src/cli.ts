@@ -13,11 +13,17 @@ import { parse as parseYaml } from "yaml";
 import { resolve } from "./resolve.js";
 import { resolveValues } from "./variables.js";
 import { compile } from "./compile.js";
-import { update, planUpdate } from "./update.js";
+import {
+  update,
+  planUpdate,
+  markLegend,
+  RESOLUTION_MARKS,
+} from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
 import { status, promote, extract, formatStatus } from "./reflux.js";
 import { eject, formatEject } from "./eject.js";
 import { validate, formatValidation } from "./validate.js";
+import { emptyAudit } from "./audit.js";
 import { watch, formatWatchEvent } from "./watch.js";
 import { lockCommand } from "./lock-command.js";
 import { hasState, readState, sourceOf } from "./state.js";
@@ -109,6 +115,7 @@ program
   .option("--answers <file>", "answers file to seed values")
   .option("--no-prompt", "do not prompt for missing variables")
   .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
+  .option("--allow-replace", "do not report files that replace an ancestor's")
   .description("materialize template → destination (first run = instantiate)")
   .action(
     async (
@@ -119,6 +126,7 @@ program
         answers?: string;
         prompt?: boolean;
         frozenLockfile?: boolean;
+        allowReplace?: boolean;
       },
     ) => {
       if (hasState(dest)) {
@@ -135,9 +143,23 @@ program
         prompt: opts.prompt !== false,
       });
       const gainedPins = graph.lockDirty;
-      const result = await compile(graph, { destDir: dest, values });
+      const audit = emptyAudit();
+      const result = await compile(graph, { destDir: dest, values, audit });
       const n = Object.keys(result.files).length;
       console.log(`Compiled ${n} file${n === 1 ? "" : "s"} → ${dest}`);
+
+      // One line, not a list: a build that discards inherited content should not
+      // be able to look identical to one that does not, but a per-file report on
+      // every compile is how status output becomes wallpaper. The count is the
+      // signal; `validate` is where the detail lives.
+      if (!opts.allowReplace && audit.replacements.length) {
+        const r = audit.replacements.length;
+        console.error(
+          `\n! ${r} file${r === 1 ? "" : "s"} replaced an ancestor's content ` +
+            `wholesale. Run \`treelay validate ${src}\` to list them, or pass ` +
+            `--allow-replace once you have.`,
+        );
+      }
       // Writing the source lockfile is a side effect on a tree the user may not
       // have expected this command to touch, so it is always announced.
       if (gainedPins) {
@@ -199,14 +221,8 @@ program
       if (drift) console.error(drift + "\n");
 
       // Only report files the working tree actually gained, lost, or had
-      // rewritten. `keep-ours`/`unchanged` write nothing, and listing them every
-      // run buries the handful that moved — and makes a no-op look like work.
-      const mark: Record<string, string> = {
-        "take-theirs": "U",
-        merged: "M",
-        conflict: "C",
-        delete: "D",
-      };
+      // rewritten; the mark vocabulary itself lives beside `Resolution` (§7).
+      const mark: Record<string, string | undefined> = RESOLUTION_MARKS;
       const changed = Object.entries(plan.files).filter(([, r]) => r in mark);
       const kept = Object.values(plan.files).filter((r) => r === "keep-ours").length;
 
@@ -220,6 +236,8 @@ program
         console.log(`  ${mark[r]}  ${path}${r === "conflict" ? "  ← conflict" : ""}`);
       }
       if (kept) console.log(`  … ${kept} file(s) with local edits left as-is.`);
+
+      console.log(`  (${markLegend(changed.map(([, r]) => mark[r]!))})`);
 
       if (plan.conflicts.length) {
         console.error(
@@ -419,8 +437,12 @@ program
   .option("--answers <file>", "answers file to seed values")
   .option("--drift", "also probe upstreams for movement (network)")
   .option("--frozen-lockfile", "fail on any ref treelay.lock does not pin")
+  .option("--allow-replace", "do not report files that replace an ancestor's")
+  .option("--strict", "treat every warning as an error (exit non-zero)")
   .option("--json", "emit machine-readable JSON")
-  .description("check for cycles, failing patches, conflicts, lock drift")
+  .description(
+    "check for cycles, failing patches, conflicts, replacements, lock drift",
+  )
   .action(
     async (
       dir: string,
@@ -429,6 +451,8 @@ program
         answers?: string;
         drift?: boolean;
         frozenLockfile?: boolean;
+        allowReplace?: boolean;
+        strict?: boolean;
         json?: boolean;
       },
     ) => {
@@ -440,6 +464,8 @@ program
         ...(Object.keys(values).length ? { values } : {}),
         ...(opts.drift ? { drift: true } : {}),
         ...(opts.frozenLockfile ? { frozen: true } : {}),
+        ...(opts.allowReplace ? { allowReplace: true } : {}),
+        ...(opts.strict ? { strict: true } : {}),
       });
 
       if (opts.json) {

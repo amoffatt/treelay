@@ -16,19 +16,24 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { composeFiles } from "./compile.js";
+import { composeFiles, type ComposeOptions } from "./compile.js";
 import type { ResolvedGraph, Values } from "./types.js";
 
 /**
  * Compose a graph and return its output in memory, without touching any real
  * destination — verification must not be able to disturb what it is checking.
+ *
+ * `options` exists for `validate`, which composes to *collect* structural
+ * findings rather than to produce bytes, and so wants an orphan op recorded
+ * instead of thrown (§4).
  */
 export async function composeToMemory(
   graph: ResolvedGraph,
   values: Values,
   destDir?: string,
+  options: ComposeOptions = {},
 ): Promise<Map<string, Buffer>> {
-  const composed = await composeFiles(graph, values, destDir);
+  const composed = await composeFiles(graph, values, destDir, options);
   const files = new Map<string, Buffer>();
   for (const [rel, entry] of composed) files.set(rel, entry.data);
   return files;

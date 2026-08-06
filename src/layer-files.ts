@@ -9,7 +9,7 @@
  * contains.
  */
 
-import { relative, resolve as resolvePath } from "node:path";
+import { basename, relative, resolve as resolvePath } from "node:path";
 import fg from "fast-glob";
 
 import { isSidecar, sidecarTarget, desugarSuffix } from "./sidecar.js";
@@ -113,6 +113,20 @@ export function destExclusions(layerDir: string, destDir?: string): string[] {
  */
 export function mountTarget(layer: Layer, target: string): string {
   return layer.mountPath ? `${layer.mountPath}/${target}` : target;
+}
+
+/**
+ * What to call a layer in human-facing output.
+ *
+ * A fetched layer's directory is a content-addressed cache path, which says
+ * nothing useful to a reader; its manifest name, or failing that the ref it came
+ * from, is what someone recognizes. Shared by `explain` and the compose audit so
+ * the same layer never goes by two different names across two reports.
+ */
+export function displayName(layer: Layer): string {
+  if (layer.manifest.name) return layer.manifest.name;
+  if (layer.mountPath) return `${layer.mountPath}/`;
+  return layer.origin?.ref ?? basename(layer.dir);
 }
 
 /** List the composable source files of a layer, lowest-level primitive. */

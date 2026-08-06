@@ -17,6 +17,12 @@ import { resolveValues } from "./variables.js";
 import { composeToMemory } from "./verify.js";
 import { checkDrift, formatDrift, hasDrift } from "./drift.js";
 import { lockfilePath } from "./lockfile.js";
+import {
+  describeOrphanOps,
+  describeReplacements,
+  emptyAudit,
+  type ComposeAudit,
+} from "./audit.js";
 import type { ResolvedGraph, Values } from "./types.js";
 
 /** What a finding means for the build. */
@@ -30,7 +36,11 @@ export type IssueCode =
   | "drift"
   | "variables-unresolved"
   | "merge-conflict"
-  | "compose-failed";
+  | "compose-failed"
+  /** An op modifies a file no lower layer produces (§4) — compile would fail. */
+  | "orphan-op"
+  /** A layer discards an ancestor's file at the same path, undeclared (§4). */
+  | "shadowed-replace";
 
 export interface ValidationIssue {
   severity: IssueSeverity;
@@ -57,6 +67,22 @@ export interface ValidateOptions extends ResolveOptions {
   values?: Values;
   /** Probe upstreams for movement. Off by default: it needs the network. */
   drift?: boolean;
+  /**
+   * Suppress the same-path replacement check (§4).
+   *
+   * For a tree where wholesale override *is* the design. Prefer declaring the
+   * intent per-path with a manifest `merge` glob, which this check already
+   * honours — a blanket flag also hides the replacements nobody meant.
+   */
+  allowReplace?: boolean;
+  /**
+   * Treat every warning as an error, so `validate` exits non-zero.
+   *
+   * The CI posture. Replacements and stale pins are warnings by default because
+   * they are legitimate often enough that failing on them would train people to
+   * pass `--no-verify`; a repo that has decided otherwise says so once, here.
+   */
+  strict?: boolean;
 }
 
 /** Run every check that can run, and report what could not. */
@@ -66,7 +92,13 @@ export async function validate(
 ): Promise<ValidationReport> {
   const issues: ValidationIssue[] = [];
   const skipped: string[] = [];
-  const { values: given, drift: probeDrift, ...resolveOptions } = options;
+  const {
+    values: given,
+    drift: probeDrift,
+    allowReplace,
+    strict,
+    ...resolveOptions
+  } = options;
 
   // ── 1. Does the graph linearize, and can every ref be materialized? ──
   let graph: ResolvedGraph;
@@ -109,15 +141,71 @@ export async function validate(
   }
 
   if (values) {
+    // Compose in `collect` mode: an orphan op is what `compile` fails on, but
+    // failing on the first one would report a single defect where a report of
+    // all of them is the whole point of this command.
+    const audit = emptyAudit();
     try {
-      const files = await composeToMemory(graph, values);
-      return finish(issues, skipped, graph, files.size, probeDrift, srcDir);
+      const files = await composeToMemory(graph, values, undefined, {
+        onOrphanOp: "collect",
+        audit,
+      });
+      auditIssues(issues, audit, allowReplace);
+      return finish(issues, skipped, graph, files.size, probeDrift, srcDir, strict);
     } catch (err) {
+      // A conflict aborts the compose partway, so whatever the audit gathered
+      // before it is still true and still worth saying.
+      auditIssues(issues, audit, allowReplace);
       issues.push(classifyComposeError(err));
     }
   }
 
-  return finish(issues, skipped, graph, undefined, probeDrift, srcDir);
+  return finish(issues, skipped, graph, undefined, probeDrift, srcDir, strict);
+}
+
+/**
+ * Turn a compose's structural findings into issues (§4).
+ *
+ * Both of these are reports of *absence*, which every other command calls
+ * success: an orphan op is an error because `compile` refuses to build it, while
+ * a replacement is a warning because a higher layer winning wholesale is also a
+ * documented, frequently-correct mechanism. `--strict` promotes the latter for
+ * repos that have decided the invariant holds.
+ */
+function auditIssues(
+  issues: ValidationIssue[],
+  audit: ComposeAudit,
+  allowReplace: boolean | undefined,
+): void {
+  if (audit.orphanOps.length) {
+    const n = audit.orphanOps.length;
+    issues.push({
+      severity: "error",
+      code: "orphan-op",
+      message:
+        `${n} op(s) modify a file no lower layer produces:\n` +
+        describeOrphanOps(audit.orphanOps),
+      remedy:
+        "An op modifies an inherited file; with no inheritance there is nothing " +
+        "to operate on. Ship the full file instead of a fragment, or check " +
+        "whether an ancestor renamed or removed the target.",
+    });
+  }
+
+  if (!allowReplace && audit.replacements.length) {
+    const n = audit.replacements.length;
+    issues.push({
+      severity: "warning",
+      code: "shadowed-replace",
+      message:
+        `${n} file(s) replace an ancestor's, discarding it:\n` +
+        describeReplacements(audit.replacements),
+      remedy:
+        "Use `.append` to extend the inherited file instead, declare the intent " +
+        'with a manifest `merge` glob ("path": "replace"), or pass ' +
+        "--allow-replace if every one of these is deliberate.",
+    });
+  }
 }
 
 /** Append the optional drift probe and assemble the report. */
@@ -128,6 +216,7 @@ function finish(
   fileCount: number | undefined,
   probeDrift: boolean | undefined,
   srcDir: string,
+  strict?: boolean,
 ): ValidationReport {
   if (probeDrift) {
     const reports = checkDrift(graph);
@@ -143,9 +232,15 @@ function finish(
     skipped.push("upstream drift (needs the network; pass --drift)");
   }
 
+  // `--strict` rewrites severities rather than only the exit code, so the printed
+  // report and the exit status can never disagree about what went wrong.
+  const final = strict
+    ? issues.map((i): ValidationIssue => ({ ...i, severity: "error" }))
+    : issues;
+
   return {
-    ok: !issues.some((i) => i.severity === "error"),
-    issues,
+    ok: !final.some((i) => i.severity === "error"),
+    issues: final,
     layerCount: graph.layers.length,
     ...(fileCount !== undefined ? { fileCount } : {}),
     skipped,

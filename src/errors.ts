@@ -27,6 +27,38 @@ export class MergeConflictError extends Error {
   }
 }
 
+/**
+ * An op was authored against an inherited file that no lower layer produces (§4).
+ *
+ * Deliberately *not* a {@link MergeConflictError}: nothing conflicted. The
+ * prerequisite is simply absent, and the remedy is different — ship the whole
+ * file, or find out what renamed or tombstoned the one you meant to modify.
+ *
+ * The failure mode this exists to prevent is absence, which is the hardest
+ * thing to notice: an `append` with nothing to append to used to produce a file
+ * containing only the fragment, so a rename upstream silently shipped documents
+ * that start halfway through.
+ */
+export class OrphanOpError extends Error {
+  constructor(
+    public readonly file: string,
+    public readonly op: string,
+    /** The op's own source file within its layer, for a pointable message. */
+    public readonly source?: string,
+  ) {
+    super(
+      `Nothing to ${op} in ${file}: no lower layer produces that file, so this ` +
+        `${op} has nothing to apply to — it was never created, or a tombstone ` +
+        `removed it.\n` +
+        (source ? `  declared by: ${source}\n` : "") +
+        `An op modifies an inherited file; with no inheritance there is no ` +
+        `super() to call. Ship the full file instead of a fragment, or check ` +
+        `whether an ancestor renamed or removed ${file}.`,
+    );
+    this.name = "OrphanOpError";
+  }
+}
+
 /** Placeholder for not-yet-built functionality during scaffolding. */
 export class NotImplementedError extends Error {
   constructor(what: string) {
