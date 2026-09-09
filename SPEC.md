@@ -91,13 +91,13 @@ Three origins, told apart by shape alone so nothing has to be declared twice:
 | Form | Example | Resolution |
 |---|---|---|
 | **local path** | `../base`, `/abs/base`, `file:./base` | as written (monorepo / dev) |
-| **root-relative** | `//products/lake/_layer` | from the enclosing repo root |
+| **root-relative** | `//packages/core/_layer` | from the enclosing repo root |
 | **git** | `git+https://host/o/r.git#v1.2.0`, `git+ssh://git@host/o/r.git#main`, `git+file:///srv/r.git#main`, `github:acme/base#v2` | cloned and pinned to a commit |
 | **npm** | `@acme/base@^2`, `pkg@1.2.3`, `npm:@acme/base@^2` | through the installed `node_modules` |
 
 **Root-relative refs (`//…`)** resolve against the nearest ancestor holding
 `treelay.root.json` or `.git`, so the same ref reads identically from every
-depth. In a tree of tenants and products the relative form is five `../` that
+depth. In a deep tree the relative form is five `../` that
 nobody can verify by eye, that all change when a layer moves, and that differ
 per leaf for the same target. A root-relative ref that overshoots also cannot
 land on an unrelated real directory — it simply does not exist.

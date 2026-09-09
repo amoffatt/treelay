@@ -155,9 +155,9 @@ describe("root-relative local refs", () => {
   }
 
   it("parses `//path` as a local ref distinguishable by shape", () => {
-    const parsed = parseRef("//products/lake/_layer");
+    const parsed = parseRef("//packages/core/_layer");
     expect(parsed.kind).toBe("local");
-    expect(parsed).toMatchObject({ rootRelative: true, path: "products/lake/_layer" });
+    expect(parsed).toMatchObject({ rootRelative: true, path: "packages/core/_layer" });
   });
 
   it("leaves ordinary relative and absolute paths alone", () => {
@@ -175,28 +175,28 @@ describe("root-relative local refs", () => {
 
   it("resolves the same target from two different depths", () => {
     repo();
-    writeTree(join(root, "products", "lake", "_layer"), {
-      "treelay.json": manifest({ name: "lake" }),
+    writeTree(join(root, "packages", "core", "_layer"), {
+      "treelay.json": manifest({ name: "core" }),
       "shared.txt": "shared\n",
     });
 
     const shallow = writeTree(join(root, "t1", "_layer"), {
       "treelay.json": manifest({
         name: "t1",
-        parents: ["//products/lake/_layer"],
+        parents: ["//packages/core/_layer"],
       }),
     });
     const deep = writeTree(join(root, "tenants", "a", "b", "_layer"), {
       "treelay.json": manifest({
         name: "deep",
-        parents: ["//products/lake/_layer"],
+        parents: ["//packages/core/_layer"],
       }),
     });
 
     // The identical ref string works at both depths — the point of the feature.
     for (const leaf of [shallow, deep]) {
       const graph = resolve(leaf);
-      expect(graph.layers.map((l) => l.manifest.name)).toContain("lake");
+      expect(graph.layers.map((l) => l.manifest.name)).toContain("core");
     }
   });
 

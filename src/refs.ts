@@ -6,7 +6,7 @@
  *
  * ```
  *   ../base                                local path (relative or absolute)
- *   //products/lake/_layer                 local path from the repo root
+ *   //packages/core/_layer                 local path from the repo root
  *   file:./base                            local path, explicit
  *   git+https://host/o/r.git#v1.2.0        git at a commit-ish
  *   git+ssh://git@host/o/r.git#main        git over ssh

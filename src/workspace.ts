@@ -2,8 +2,8 @@
  * Locating the repo root that `//` refs resolve against — SPEC §2.
  *
  * A monorepo of layers has no way to say "this path, from the top". Every
- * intra-repo ref is relative to the manifest's own directory, so a tenant six
- * directories deep writes `../../../../../products/lake/_layer` — five `..`
+ * intra-repo ref is relative to the manifest's own directory, so a layer six
+ * directories deep writes `../../../../../packages/core/_layer` — five `..`
  * that nobody can verify by eye, that all change when a layer is filed one
  * level deeper, and that differ per leaf for the same target.
  *

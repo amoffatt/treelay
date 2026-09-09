@@ -153,8 +153,8 @@ In a monorepo of layers, write `//` refs from the repo root instead of counting
 `../`:
 
 ```jsonc
-{ "parents": ["//products/lake/_layer"],
-  "mixins":  ["//products/lake/verticals/west/_layer", "../../_layer"] }
+{ "parents": ["//packages/core/_layer"],
+  "mixins":  ["//packages/core/plugins/auth/_layer", "../../_layer"] }
 ```
 
 The same ref reads identically from every depth, and one that overshoots fails
