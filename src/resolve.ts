@@ -13,7 +13,9 @@
 import { isAbsolute, relative, resolve as resolvePath } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { c3Linearize } from "./c3.js";
-import { loadManifest, isWritable } from "./manifest.js";
+import { loadManifest, hasManifest, layerChildren, isWritable } from "./manifest.js";
+import { findRepoRoot, ROOT_MARKERS } from "./workspace.js";
+import { MissingManifestError } from "./errors.js";
 import { mergeVariableDecls } from "./variables.js";
 import { fetchLayer } from "./fetch/index.js";
 import { emptyLock, locksEqual, readLock, type TreelayLock } from "./lockfile.js";
@@ -182,7 +184,7 @@ function normalizeMount(path: string): string {
 }
 
 /** Load a local layer directory, memoized by absolute path. */
-function loadLocal(ctx: Context, dir: string): Layer {
+function loadLocal(ctx: Context, dir: string, manifestless = false): Layer {
   const cached = ctx.cache.get(dir);
   if (cached) return cached;
   const layer: Layer = {
@@ -191,6 +193,7 @@ function loadLocal(ctx: Context, dir: string): Layer {
     manifest: loadManifest(dir),
     writable: isWritable(dir),
     origin: { kind: "local" },
+    ...(manifestless ? { manifestless: true as const } : {}),
   };
   ctx.cache.set(dir, layer);
   return layer;
@@ -199,7 +202,20 @@ function loadLocal(ctx: Context, dir: string): Layer {
 /** Resolve one declared reference from `from` into a loaded layer. */
 function loadRef(ctx: Context, ref: LayerRef, from: Layer): Layer {
   const parsed = parseRef(ref);
-  if (parsed.kind === "local") return loadLocal(ctx, resolveLocalRef(ref, from.dir));
+  if (parsed.kind === "local") {
+    const dir = resolveLocalRef(ref, from.dir);
+    if (!hasManifest(dir)) {
+      // A manifest-less directory is still a valid parent-less layer (§2) — but
+      // one that *contains* a layer is the signature of a ref a level too
+      // shallow, which would overlay the whole enclosing directory instead.
+      const candidates = layerChildren(dir);
+      if (candidates.length) {
+        throw new MissingManifestError(ref, dir, candidates, from.dir);
+      }
+      return loadLocal(ctx, dir, /* manifestless */ true);
+    }
+    return loadLocal(ctx, dir);
+  }
 
   const key = canonicalRef(parsed);
   const cached = ctx.cache.get(key);
@@ -253,10 +269,24 @@ function recordRequester(ctx: Context, key: string, from: Layer): void {
   entry.requestedBy = [...list].sort();
 }
 
+/** The repo root a `//` ref resolves against, or a pointable failure. */
+function repoRootFor(ref: LayerRef, fromDir: string): string {
+  const root = findRepoRoot(fromDir);
+  if (!root) {
+    throw new Error(
+      `Cannot resolve root-relative ref "${ref}": no repo root above ${fromDir}. ` +
+        `Root-relative refs resolve against the nearest ancestor containing ` +
+        `${ROOT_MARKERS.join(" or ")}; add one, or use a relative path.`,
+    );
+  }
+  return root;
+}
+
 /** Resolve a local path reference to an absolute directory. */
 function resolveLocalRef(ref: LayerRef, fromDir: string): string {
   const parsed = parseRef(ref);
-  const dir = resolvePath(fromDir, parsed.kind === "local" ? parsed.path : ref);
+  const base = parsed.kind === "local" && parsed.rootRelative ? repoRootFor(ref, fromDir) : fromDir;
+  const dir = resolvePath(base, parsed.kind === "local" ? parsed.path : ref);
   if (!existsSync(dir) || !statSync(dir).isDirectory()) {
     throw new Error(`Layer not found: "${ref}" (resolved to ${dir})`);
   }

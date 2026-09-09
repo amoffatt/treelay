@@ -42,6 +42,7 @@ import { SIDECAR_SUFFIX } from "./sidecar.js";
 import { parseStructured } from "./serde.js";
 import { generateMergePatch } from "./merge/structured.js";
 import { blastRadius, commonAncestor, describeBlastRadius } from "./blast-radius.js";
+import { ALLOW_ALL, NEVER_SCAN, buildIgnoreFilter } from "./gitignore.js";
 import { roundTripVerify, composeToMemory, describeMismatches } from "./verify.js";
 import type { BlastRadius } from "./blast-radius.js";
 import type {
@@ -95,14 +96,22 @@ async function loadContext(destDir: string): Promise<Context> {
   };
 }
 
-/** Files currently in the destination, ignoring its `.treelay/` state dir. */
+/**
+ * Files currently in the destination, ignoring its `.treelay/` state dir.
+ *
+ * Symlinks are not followed. A destination inside an npm workspace has
+ * `node_modules/<self>` pointing back at itself, so following links reported
+ * every file a second time under a path that does not really contain it —
+ * and could walk clean out of the tree being scanned.
+ */
 function destFiles(destDir: string): string[] {
   return fg
     .sync("**/*", {
       cwd: destDir,
       dot: true,
       onlyFiles: true,
-      ignore: [`${STATE_DIR}/**`],
+      followSymbolicLinks: false,
+      ignore: [`${STATE_DIR}/**`, ...NEVER_SCAN],
     })
     .sort();
 }
@@ -141,10 +150,29 @@ function shadowers(
 
 // ---------------------------------------------------------------- status
 
+export interface StatusOptions {
+  /** List local additions the destination's `.gitignore` excludes. */
+  all?: boolean;
+  /**
+   * Report only files the template produced and you then edited — the subset
+   * `promote` can act on, and the question being asked most of the time.
+   */
+  modifiedOnly?: boolean;
+  /**
+   * Filled in with what the scan chose not to say, so a caller can summarize
+   * rather than leaving the omission invisible.
+   */
+  skipped?: { ignored: number };
+}
+
 /** List changes in a destination vs its baseline, with provenance (§8). */
-export async function status(destDir: string): Promise<Change[]> {
+export async function status(
+  destDir: string,
+  options: StatusOptions = {},
+): Promise<Change[]> {
   const ctx = await loadContext(destDir);
-  const present = new Set(destFiles(destDir));
+  const scanned = destFiles(destDir);
+  const present = new Set(scanned);
   const changes: Change[] = [];
 
   for (const [path, recorded] of Object.entries(ctx.baseline)) {
@@ -158,12 +186,28 @@ export async function status(destDir: string): Promise<Change[]> {
     }
   }
 
+  // Ignore rules are consulted only for files the template never produced.
+  // A baseline file that is *also* gitignored — a tree compiled into an
+  // ignored `build/` — is still tracked, and hiding its edits would be the
+  // same silent-omission bug one level down.
+  const filter = options.all ? ALLOW_ALL : buildIgnoreFilter(destDir, scanned);
+  let ignored = 0;
+
   for (const path of present) {
     if (path in ctx.baseline) continue;
+    if (filter.ignores(path)) {
+      ignored += 1;
+      continue;
+    }
     changes.push(annotate(ctx, { path, kind: "added" }));
   }
 
-  return changes.sort((a, b) => a.path.localeCompare(b.path));
+  if (options.skipped) options.skipped.ignored = ignored;
+
+  const listed = options.modifiedOnly
+    ? changes.filter((c) => c.kind === "modified")
+    : changes;
+  return listed.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /** Attach producing layer, patch chain, and viable promotion targets. */
@@ -236,6 +280,17 @@ export interface PromoteOptions {
   verify?: boolean;
   /** Root for the blast-radius scan (default: common ancestor of the graph). */
   searchRoot?: string;
+  /**
+   * Refuse the promotion when more than `n` consumers would be affected (§8
+   * guard 3).
+   *
+   * Guard 3 reports by default, because most promotions are meant to reach
+   * their dependents — that is what promoting *is*. In a multi-tenant tree the
+   * calculus inverts: a file promoted into a shared base reaches every tenant
+   * of every product, and a warning printed after the write has already
+   * scrolled past. Opt in and the scan runs *before* anything is written.
+   */
+  maxBlastRadius?: number;
 }
 
 /**
@@ -275,6 +330,28 @@ export async function promote(
     }
   }
 
+  // Computed before anything is written: it depends only on who consumes the
+  // target layer, not on the promoted content, so enforcing it here refuses the
+  // promotion outright rather than reporting it after the fact.
+  const searchRoot =
+    options.searchRoot ?? commonAncestor([...ctx.graph.layers.map((l) => l.dir), destDir]);
+  const radius = blastRadius(target.dir, {
+    searchRoot,
+    excludeDest: destDir,
+    excludeLayer: ctx.srcDir,
+  });
+  const reach = radius.dependents.length + radius.destinations.length;
+  if (options.maxBlastRadius !== undefined && reach > options.maxBlastRadius) {
+    throw new Error(
+      `Promoting to ${layerName(target)} would affect ${reach} consumer(s), ` +
+        `over the --max-blast-radius of ${options.maxBlastRadius}; nothing was ` +
+        `written (§8 guard 3).\n${describeBlastRadius(radius, layerName(target))}` +
+        (radius.bounded
+          ? `\nThe scan is bounded by ${searchRoot}, so the real reach may be larger.`
+          : ""),
+    );
+  }
+
   const tx = new LayerTransaction();
   let landed: LandedChange[];
   try {
@@ -307,15 +384,7 @@ export async function promote(
     rebaseline(ctx, regraph, result.composed);
   }
 
-  // Guard 3 — blast radius, reported (not enforced) once the change has landed.
-  const searchRoot =
-    options.searchRoot ?? commonAncestor([...ctx.graph.layers.map((l) => l.dir), destDir]);
-  const radius = blastRadius(target.dir, {
-    searchRoot,
-    excludeDest: destDir,
-    excludeLayer: ctx.srcDir,
-  });
-
+  // Guard 3 — reported by default, already enforced above when a ceiling was set.
   return {
     target: target.id,
     targetName: layerName(target),

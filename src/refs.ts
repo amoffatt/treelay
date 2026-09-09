@@ -6,6 +6,7 @@
  *
  * ```
  *   ../base                                local path (relative or absolute)
+ *   //products/lake/_layer                 local path from the repo root
  *   file:./base                            local path, explicit
  *   git+https://host/o/r.git#v1.2.0        git at a commit-ish
  *   git+ssh://git@host/o/r.git#main        git over ssh
@@ -39,8 +40,13 @@ interface BaseRef {
 /** A path on this machine; never locked, never cached. */
 export interface LocalRef extends BaseRef {
   kind: "local";
-  /** The path portion, with any `file:` scheme stripped. */
+  /** The path portion, with any `file:` or `//` prefix stripped. */
   path: string;
+  /**
+   * Written `//from/repo/root` — resolved against the enclosing repo root
+   * rather than the referring manifest's directory (§2).
+   */
+  rootRelative?: true;
 }
 
 /** A git repository at a commit-ish (branch, tag, or full SHA). */
@@ -134,6 +140,14 @@ export function parseRef(ref: string): ParsedRef {
 
   if (raw.startsWith("file:")) {
     return { kind: "local", raw, path: raw.slice("file:".length) };
+  }
+  // Checked before `isAbsolute`, which accepts a leading `//` on POSIX. A
+  // literal `//`-rooted absolute path is implementation-defined and not a thing
+  // anyone writes on purpose; a root-relative layer ref is.
+  if (raw.startsWith("//")) {
+    const path = raw.slice(2);
+    if (path === "") throw new InvalidRefError(ref, "root-relative ref has no path");
+    return { kind: "local", raw, path, rootRelative: true };
   }
   if (raw.startsWith(".") || isAbsolute(raw) || WINDOWS_DRIVE.test(raw)) {
     return { kind: "local", raw, path: raw };

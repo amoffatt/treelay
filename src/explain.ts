@@ -15,7 +15,7 @@
  * useful precisely where a build is failing.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 
 import {
@@ -120,6 +120,14 @@ export interface ExplainResult {
   layers: LayerSummary[];
   /** Keyed by output path, insertion-ordered by path. */
   files: Record<string, FileExplanation>;
+  /**
+   * The destination this explanation was taken against, when there was one.
+   *
+   * Lets "no layer produces this" be split into the two answers that differ in
+   * what you do next: a file that is *there* and user-owned, versus a path that
+   * does not exist at all. Without it both read identically (§7).
+   */
+  destDir?: string;
 }
 
 export interface ExplainOptions {
@@ -303,7 +311,11 @@ export async function explain(
     };
   }
 
-  return { layers: summaries, files };
+  return {
+    layers: summaries,
+    files,
+    ...(options.destDir ? { destDir: options.destDir } : {}),
+  };
 }
 
 /**
@@ -509,7 +521,7 @@ export function formatExplanation(
 
   const paths = only ? [only] : Object.keys(result.files);
   if (only && !result.files[only]) {
-    lines.push(`No layer contributes to "${only}".`);
+    lines.push(notComposed(result, only));
     return lines.join("\n");
   }
 
@@ -557,6 +569,21 @@ export function formatExplanation(
 /** Commit SHAs are abbreviated for display; package versions are already short. */
 function shortRevision(rev: string): string {
   return /^[0-9a-f]{40}$/i.test(rev) ? rev.slice(0, 12) : rev;
+}
+
+/**
+ * Why a path is absent from the composition — the inverse question, and the one
+ * asked while moving files around: "is this in a tree, and if not, why not?"
+ */
+function notComposed(result: ExplainResult, path: string): string {
+  if (result.destDir === undefined) {
+    return `No layer contributes to "${path}".`;
+  }
+  return existsSync(join(result.destDir, path))
+    ? `"${path}" is in the destination but no layer produces it — ` +
+        `user-owned, and update/promote leave it alone (§7).`
+    : `"${path}" is not composed and not in the destination — no layer ` +
+        `produces it and nothing created it locally.`;
 }
 
 function nameOf(result: ExplainResult, id?: string): string {

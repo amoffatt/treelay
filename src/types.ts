@@ -153,6 +153,13 @@ export interface Layer {
    * Absent for ordinary layers, which compose at the tree root.
    */
   mountPath?: string;
+  /**
+   * Reached through a declared ref, but declares no manifest — so its whole
+   * directory became the layer (§2). Legal, and the shape of a mistyped ref, so
+   * `plan` marks it and `validate` warns rather than either staying silent or
+   * refusing a documented pattern.
+   */
+  manifestless?: true;
 }
 
 /**

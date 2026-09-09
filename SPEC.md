@@ -91,8 +91,24 @@ Three origins, told apart by shape alone so nothing has to be declared twice:
 | Form | Example | Resolution |
 |---|---|---|
 | **local path** | `../base`, `/abs/base`, `file:./base` | as written (monorepo / dev) |
+| **root-relative** | `//products/lake/_layer` | from the enclosing repo root |
 | **git** | `git+https://host/o/r.git#v1.2.0`, `git+ssh://git@host/o/r.git#main`, `git+file:///srv/r.git#main`, `github:acme/base#v2` | cloned and pinned to a commit |
 | **npm** | `@acme/base@^2`, `pkg@1.2.3`, `npm:@acme/base@^2` | through the installed `node_modules` |
+
+**Root-relative refs (`//…`)** resolve against the nearest ancestor holding
+`treelay.root.json` or `.git`, so the same ref reads identically from every
+depth. In a tree of tenants and products the relative form is five `../` that
+nobody can verify by eye, that all change when a layer moves, and that differ
+per leaf for the same target. A root-relative ref that overshoots also cannot
+land on an unrelated real directory — it simply does not exist.
+
+**A declared ref must name a layer.** A directory reached through `parents` or
+`mixins` that holds no manifest but *contains* one is an error: it is a ref one
+level too shallow, and composing it would overlay the whole enclosing directory
+— every sibling of the real layer, with the layer's own files nested a level
+deep. A manifest-less directory holding only content is still a valid
+parent-less layer; `plan` marks it and `validate` warns (`manifestless-layer`),
+because by shape alone it is indistinguishable from the typo.
 
 Any non-local ref may carry **`?path=<subdir>`** to use a subdirectory of the
 fetched tree as the layer root — the monorepo-of-layers case
@@ -886,7 +902,29 @@ treelay status <dest>
   M  .eslintrc            ← produced by ../shared-eslint
   A  src/custom/thing.ts  ← local-only (no template origin)
   D  README.md            ← produced by @acme/service-base
+
+… and 74,988 ignored file(s) not listed (--all to include).
 ```
+
+#### What `status` scans
+
+The destination's own `.gitignore` files are honoured, nested ones included, and
+symlinks are never followed. Without both, a tree anyone has worked in reports
+`node_modules/`, `.venv/` and `__pycache__/` as local additions — one report had
+75,321 lines with the single real finding on line 75,295 — and an npm workspace's
+`node_modules/<self>` link reported the whole project a second time under a path
+that does not contain it.
+
+Ignore rules apply to **local additions only**. A file the template produced is
+always compared against the baseline even when git ignores it, because a tree
+compiled into an ignored `build/` is a supported shape (§7) and hiding its edits
+would be the same silent omission one level down.
+
+- `--all` lists the ignored additions too.
+- `--modified-only` narrows to files the template produced and you then edited —
+  the subset `promote` can act on.
+
+Whatever is left out is counted, never simply dropped.
 
 ### Dispositions — the menu per change
 
@@ -1012,6 +1050,14 @@ not a read-only one. The mechanics differ from a local path only at the end:
    the intent, but a footgun. Warn: *"node-base is consumed by 6 projects; this
    edit reaches all of them on their next update."*
 
+   Reported rather than enforced, because reaching dependents is what promoting
+   is *for*; a guard that blocks the normal case is a guard people route around.
+   Multi-tenant trees invert that calculus — a promotion into a shared base
+   reaches every tenant of every product, and a warning printed after the write
+   has already scrolled past. `--max-blast-radius <n>` refuses above a ceiling,
+   and because the scan depends only on who consumes the target layer, it runs
+   *before* anything is written rather than rolling back after.
+
 After a verified promote, `.treelay/baseline` is rewritten so the change counts
 as "from template" and drops off the local-changes list — it now flows down by
 inheritance instead of being a local override.
@@ -1039,9 +1085,12 @@ treelay compile <src> <dest> [--set k=v] [--answers f] [--no-prompt] [--allow-re
                                # materialize template → destination (first run = instantiate)
                                #   --allow-replace  do not report same-path replacements (§4)
 treelay update  <dest> [--set k=v]   # re-render with saved answers (prompt only new vars) + 3-way merge
-treelay status  <dest> [--json]  # list changes vs baseline, annotated with producing layer
+treelay status  <dest> [--json] [--all] [--modified-only]
+                               # list changes vs baseline, annotated with producing layer
+                               # honours the destination's .gitignore; --all overrides
 treelay diff    <dest|a> [b]   # working-vs-baseline hunks, or layer-vs-layer
 treelay promote <dest> [files...] [--to <layer>] [--dry-run] [--no-verify]
+                               # [--max-blast-radius <n>] refuses above n consumers
                                # push edits up; auto-suggests --to from provenance
                                # git targets: [--branch <name>] [--push] [--pr]
                                #   (commit-on-branch only unless --push/--pr given)
@@ -1158,6 +1207,10 @@ const reach = blastRadius(layerDir, { searchRoot });           // who else consu
   interactive resolver is deferred; it composes on top of either mode rather
   than replacing them.
 - **Reflux granularity** — file-level for v1; hunk-level splitting + auto-`absorb` routing deferred to v2. **[open]**
+- **Blast-radius enforcement** — reported by default, since reaching dependents
+  is what promoting *is*; `--max-blast-radius <n>` refuses above a ceiling and
+  runs *before* anything is written. For multi-tenant trees, where a promotion
+  into a shared base reaches every tenant. **[decided]** (§8)
 - **Template engine** — **LiquidJS [decided]** (safe, sandboxed; over Nunjucks/Eta) — see §6.
 - **Reflux re-templatization** — store promoted edits literally vs assisted value→`{{ var }}` substitution (§8). **[open]**
 - **Git layer write-back** — git layers are writable via a working clone; reflux commits onto a branch (never a pinned ref), landing mode (commit / push / PR) chosen per promote, lockfile + project ref advanced on success. **[decided]** (§8)

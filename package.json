@@ -54,6 +54,7 @@
     "diff": "^9",
     "fast-glob": "^3",
     "fast-json-patch": "^3",
+    "ignore": "^7.0.9",
     "json-merge-patch": "^1",
     "liquidjs": "^10",
     "node-diff3": "^3",

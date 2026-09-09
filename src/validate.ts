@@ -43,7 +43,9 @@ export type IssueCode =
   /** A layer discards an ancestor's file at the same path, undeclared (§4). */
   | "shadowed-replace"
   /** A layer's array discards an ancestor's elements under `replace` (§4). */
-  | "dropped-array";
+  | "dropped-array"
+  /** A declared ref reached a directory that declares no layer (§2). */
+  | "manifestless-layer";
 
 export interface ValidationIssue {
   severity: IssueSeverity;
@@ -113,6 +115,26 @@ export async function validate(
     skipped.push("patches and conflicts (the graph did not resolve)");
     skipped.push("lockfile freshness (the graph did not resolve)");
     return { ok: false, issues, skipped };
+  }
+
+  // A declared ref landing one level above a layer is already a hard error
+  // (§2). What remains is the legal case — a manifest-less directory holding
+  // only content — which is indistinguishable from a typo by shape alone, so it
+  // is reported rather than either refused or passed over in silence.
+  const manifestless = graph.layers.filter((l) => l.manifestless);
+  if (manifestless.length) {
+    issues.push({
+      severity: "warning",
+      code: "manifestless-layer",
+      message:
+        `${manifestless.length} layer(s) declare no manifest; the whole ` +
+        `directory is the layer:\n` +
+        manifestless.map((l) => `  ${l.dir}`).join("\n"),
+      remedy:
+        "If that is intended, add an empty treelay.json to say so. If the ref " +
+        "was meant to name a layer inside this directory, it is one level too " +
+        "shallow.",
+    });
   }
 
   // ── 2. Is the committed lock still what this tree resolves to? ──

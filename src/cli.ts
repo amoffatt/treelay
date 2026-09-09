@@ -17,6 +17,7 @@ import {
   update,
   planUpdate,
   markLegend,
+  dependencyManifests,
   RESOLUTION_MARKS,
 } from "./update.js";
 import { explain, explainDest, formatExplanation } from "./explain.js";
@@ -68,6 +69,9 @@ program
       const marks = [
         l.mountPath ? `mounted at ${l.mountPath}/` : undefined,
         l.origin?.revision ? `pinned ${shortRev(l.origin.revision)}` : undefined,
+        // Makes `base` and `base/_layer` distinguishable at a glance, which is
+        // the difference a mistyped ref turns on.
+        l.manifestless ? "no manifest — whole directory" : undefined,
       ].filter(Boolean);
       const suffix = marks.length ? `  [${marks.join(", ")}]` : "";
       console.log(`  ${i + 1}. ${l.manifest.name ?? l.id}${suffix}`);
@@ -248,6 +252,15 @@ program
 
       console.log(`  (${markLegend(changed.map(([, r]) => mark[r]!))})`);
 
+      // The declared dependencies just moved; the installed ones did not.
+      const deps = dependencyManifests(changed.map(([path]) => path));
+      if (deps.length && !opts.dryRun) {
+        console.log(
+          `\n${deps.join(", ")} changed — reinstall dependencies before ` +
+            `building.`,
+        );
+      }
+
       if (plan.conflicts.length) {
         console.error(
           `\n${plan.conflicts.length} conflict(s). ` +
@@ -294,18 +307,37 @@ program
   .command("status")
   .argument("<dest>", "destination directory")
   .option("--json", "emit machine-readable JSON")
+  .option("--all", "include local files the destination's .gitignore excludes")
+  .option("--modified-only", "only files the template produced and you edited")
   .description("list changes vs baseline, annotated with producing layer")
-  .action(async (dest: string, opts: { json?: boolean }) => {
-    requireState(dest, "status");
-    const changes = await status(dest);
-    if (opts.json) {
-      console.log(JSON.stringify(changes, null, 2));
-      return;
-    }
-    const state = readState(dest);
-    const src = sourceOf(state);
-    console.log(formatStatus(changes, resolve(src!)));
-  });
+  .action(
+    async (
+      dest: string,
+      opts: { json?: boolean; all?: boolean; modifiedOnly?: boolean },
+    ) => {
+      requireState(dest, "status");
+      const skipped = { ignored: 0 };
+      const changes = await status(dest, {
+        ...(opts.all ? { all: true } : {}),
+        ...(opts.modifiedOnly ? { modifiedOnly: true } : {}),
+        skipped,
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(changes, null, 2));
+        return;
+      }
+      const state = readState(dest);
+      const src = sourceOf(state);
+      console.log(formatStatus(changes, resolve(src!)));
+      // Say what was left out. An omission nobody is told about is the same
+      // class of defect as the noise it replaced.
+      if (skipped.ignored && !opts.modifiedOnly) {
+        console.log(
+          `\n… and ${skipped.ignored} ignored file(s) not listed (--all to include).`,
+        );
+      }
+    },
+  );
 
 program
   .command("promote")
@@ -314,12 +346,28 @@ program
   .option("--to <layer>", "target layer (auto-suggested if omitted)")
   .option("--no-verify", "skip the round-trip recompile check (§8 guard 2)")
   .option("--dry-run", "show what each target would gain; write nothing")
+  .option(
+    "--max-blast-radius <n>",
+    "refuse to promote when more than n consumers would be affected",
+    (v: string) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error(`--max-blast-radius expects a non-negative integer, got "${v}"`);
+      }
+      return n;
+    },
+  )
   .description("push instance edits up into a layer")
   .action(
     async (
       dest: string,
       files: string[],
-      opts: { to?: string; verify?: boolean; dryRun?: boolean },
+      opts: {
+        to?: string;
+        verify?: boolean;
+        dryRun?: boolean;
+        maxBlastRadius?: number;
+      },
     ) => {
       const changes = await changesFor(dest, files);
       if (!changes.length) {
@@ -337,6 +385,9 @@ program
 
       const result = await promote(dest, changes, {
         ...(opts.to ? { to: opts.to } : {}),
+        ...(opts.maxBlastRadius !== undefined
+          ? { maxBlastRadius: opts.maxBlastRadius }
+          : {}),
         verify: opts.verify !== false,
       });
 

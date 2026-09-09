@@ -59,6 +59,37 @@ export class OrphanOpError extends Error {
   }
 }
 
+/**
+ * A `parents`/`mixins` ref resolved to a directory that declares no layer (§2).
+ *
+ * Without this, such a ref quietly became a parent-less layer whose content was
+ * the entire directory — so a ref missing its `_layer/` suffix shipped files
+ * that were never layer content and put the real layer's files one directory
+ * deep, with no error, no warning, and a plausible file count. The remedy is
+ * usually visible in the ref itself, so the message shows it.
+ */
+export class MissingManifestError extends Error {
+  constructor(
+    ref: string,
+    dir: string,
+    candidates: readonly string[],
+    declaredIn?: string,
+  ) {
+    const suggestions = candidates
+      .map((c) => `    ${ref.replace(/\/+$/, "")}/${c}`)
+      .join("\n");
+    super(
+      `Layer "${ref}" has no manifest, but contains one (resolved to ${dir}).\n` +
+        (declaredIn ? `  declared in: ${declaredIn}\n` : "") +
+        `  did you mean:\n${suggestions}\n` +
+        `Composing "${ref}" would overlay that entire directory — every sibling ` +
+        `of the real layer, with the layer's own files nested one level deep. ` +
+        `That is almost always a ref that is one level too shallow.`,
+    );
+    this.name = "MissingManifestError";
+  }
+}
+
 /** Placeholder for not-yet-built functionality during scaffolding. */
 export class NotImplementedError extends Error {
   constructor(what: string) {

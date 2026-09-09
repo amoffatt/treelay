@@ -18,6 +18,7 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import picomatch from "picomatch";
 
 import { composeFiles, summarize, type FileEntry } from "./compile.js";
 import { checkDrift, type DriftReport } from "./drift.js";
@@ -61,6 +62,41 @@ export type Resolution =
  * to investigate a non-problem, and that is how people learn to skip status
  * output entirely. `C` is the only mark here that means stop.
  */
+/**
+ * Files whose contents a package manager, not the reader, has to act on.
+ *
+ * An update that rewrites `package.json` leaves the tree in a state where the
+ * declared dependencies and the installed ones disagree — and nothing in the
+ * output distinguishes that from any other changed file, so the next command to
+ * run is whatever the reader was already going to do. Naming them costs one
+ * line and removes a failure that only shows up later, somewhere else.
+ */
+export const DEPENDENCY_MANIFESTS = [
+  "**/package.json",
+  "**/package-lock.json",
+  "**/pnpm-lock.yaml",
+  "**/yarn.lock",
+  "**/requirements*.txt",
+  "**/pyproject.toml",
+  "**/poetry.lock",
+  "**/uv.lock",
+  "**/Pipfile",
+  "**/Pipfile.lock",
+  "**/Cargo.toml",
+  "**/Cargo.lock",
+  "**/go.mod",
+  "**/go.sum",
+  "**/Gemfile",
+  "**/Gemfile.lock",
+  "**/composer.json",
+  "**/composer.lock",
+];
+
+/** Which of `paths` are dependency manifests, in the order given. */
+export function dependencyManifests(paths: readonly string[]): string[] {
+  return paths.filter((p) => DEPENDENCY_MANIFESTS.some((g) => picomatch.isMatch(p, g)));
+}
+
 export const RESOLUTION_MARKS: Readonly<Partial<Record<Resolution, string>>> = {
   "take-theirs": "T",
   merged: "M",

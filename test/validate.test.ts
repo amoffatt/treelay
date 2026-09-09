@@ -38,7 +38,10 @@ const codes = (issues: { code: string }[]) => issues.map((i) => i.code);
 
 describe("validate", () => {
   it("passes a healthy composition and counts what it checked", async () => {
-    layer("base", { "a.txt": "base\n" });
+    layer("base", {
+      "treelay.json": JSON.stringify({ name: "base" }),
+      "a.txt": "base\n",
+    });
     const leaf = layer("leaf", {
       "treelay.json": JSON.stringify({ name: "leaf", parents: ["../base"] }),
       "b.txt": "leaf\n",
@@ -180,7 +183,10 @@ describe("validate", () => {
 
 describe("formatValidation", () => {
   it("states the all-clear with what was covered", async () => {
-    layer("base", { "a.txt": "base\n" });
+    layer("base", {
+      "treelay.json": JSON.stringify({ name: "base" }),
+      "a.txt": "base\n",
+    });
     const leaf = layer("leaf", {
       "treelay.json": JSON.stringify({ name: "leaf", parents: ["../base"] }),
     });

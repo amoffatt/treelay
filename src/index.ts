@@ -10,12 +10,20 @@ export {
   InconsistentHierarchyError,
   MergeConflictError,
   OrphanOpError,
+  MissingManifestError,
   NotImplementedError,
 } from "./errors.js";
 
 export { c3Linearize } from "./c3.js";
 export { resolve, resolveRef } from "./resolve.js";
-export { loadManifest } from "./manifest.js";
+export { loadManifest, hasManifest, layerChildren } from "./manifest.js";
+export { findRepoRoot, ROOT_MARKERS } from "./workspace.js";
+export {
+  buildIgnoreFilter,
+  ALLOW_ALL,
+  NEVER_SCAN,
+  type IgnoreFilter,
+} from "./gitignore.js";
 export { mergeVariableDecls, resolveValues } from "./variables.js";
 export { renderString, templateTarget, createEngine } from "./render.js";
 export {
@@ -91,12 +99,15 @@ export {
   update,
   planUpdate,
   markLegend,
+  dependencyManifests,
   RESOLUTION_MARKS,
   MARK_MEANINGS,
+  DEPENDENCY_MANIFESTS,
 } from "./update.js";
 export type { UpdateOptions, UpdatePlan, Resolution } from "./update.js";
 export { status, promote, extract, formatStatus } from "./reflux.js";
 export type {
+  StatusOptions,
   PromoteOptions,
   PromoteResult,
   ExtractOptions,

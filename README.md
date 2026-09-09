@@ -69,7 +69,7 @@ See [SPEC.md §1](./SPEC.md) for the full comparison.
 treelay compile <src> <dest>   # materialize template → destination
 treelay update  <dest>         # pull template changes down (3-way merge)
                                #   --on-conflict markers|rej  --dry-run
-treelay status  <dest>         # list local changes vs baseline (--json)
+treelay status  <dest>         # list local changes vs baseline (--json, --all, --modified-only)
 treelay promote <dest> [files...] --to <layer>   # push edits up into a layer
                                #   --dry-run  --no-verify
 treelay extract <dest> [files...] --as <path>    # capture edits as a new layer
@@ -148,6 +148,19 @@ shape, so nothing has to be declared twice:
 
 Add `?path=core/_layer` to any non-local ref to use a subdirectory of the
 fetched tree as the layer root.
+
+In a monorepo of layers, write `//` refs from the repo root instead of counting
+`../`:
+
+```jsonc
+{ "parents": ["//products/lake/_layer"],
+  "mixins":  ["//products/lake/verticals/west/_layer", "../../_layer"] }
+```
+
+The same ref reads identically from every depth, and one that overshoots fails
+instead of landing on an unrelated directory. A ref reaching a directory that
+holds no manifest but *contains* one is an error — that is a ref a level too
+shallow, and composing it would overlay the whole enclosing directory.
 
 **`mounts` vendor a whole tree into the output** at a fixed subpath. Mount paths
 merge by ordinary layer precedence, which is the point: a leaf can hold
@@ -294,6 +307,8 @@ $ treelay status ./out
   A  extra.ts   ← local-only (no template origin)
   M  notes.txt  ← produced by @acme/base
 
+… and 42 ignored file(s) not listed (--all to include).
+
 $ treelay promote ./out notes.txt --to @acme/base
 Promoted into @acme/base:
   rewrite   notes.txt  → notes.txt
@@ -301,6 +316,15 @@ Round-trip verified: the destination reproduces from the template.
 
 @acme/base is consumed beyond this project — 1 other layer inherits it. This edit reaches all of them on their next update.
 ```
+
+`status` honours the destination's `.gitignore`, so a tree you have built in
+does not bury the real findings under `node_modules/`. Files the template
+produced are always compared, even when git ignores them. Use `--all` to see
+everything, or `--modified-only` for just the files you edited.
+
+Promoting into a shared layer reaches every project inheriting it — that is the
+point, and occasionally the problem. `--max-blast-radius <n>` refuses the
+promotion above a ceiling, before anything is written.
 
 After a verified promote the change flows down by inheritance, so it stops
 showing up as local drift — `status` now lists only `extra.ts`.
