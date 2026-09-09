@@ -160,6 +160,15 @@ program
             `--allow-replace once you have.`,
         );
       }
+      if (audit.droppedArrays.length) {
+        const total = audit.droppedArrays.reduce((sum, d) => sum + d.dropped, 0);
+        const a = audit.droppedArrays.length;
+        console.error(
+          `\n! ${a} array${a === 1 ? "" : "s"} discarded ${total} inherited ` +
+            `element${total === 1 ? "" : "s"}. Run \`treelay validate ${src}\` ` +
+            `to list them, or set an \`arrays\` policy for those paths.`,
+        );
+      }
       // Writing the source lockfile is a side effect on a tree the user may not
       // have expected this command to touch, so it is always announced.
       if (gainedPins) {

@@ -113,6 +113,23 @@ base layer's `*.tfstate` and `**/secrets.tfvars` lines from that deployment.
 Write `.gitignore.append` to extend an inherited file. Declaring the strategy in
 a manifest `merge` glob marks a replacement as deliberate and stops reporting it.
 
+The same applies one level down, inside a file that merged cleanly:
+
+```console
+$ treelay validate ./layers/service
+! dropped-array: 1 array(s) discarded 3 inherited element(s) under the replace policy:
+  meta/_journal.json/entries  service dropped 3 inherited entries from core
+```
+
+Arrays **replace** by default. For lists every layer legitimately contributes to
+— migration journals, database bindings, route tables — declare a key instead:
+
+```jsonc
+"arrays": {
+  "meta/_journal.json": { "policy": "by-key", "key": "idx", "order": "key" }
+}
+```
+
 `eject` is one-way. It deletes the baseline that makes `update` a three-way
 merge rather than a guess, and nothing in the output can reconstruct it, so
 `--dry-run` shows what the link was tracking before you cut it.

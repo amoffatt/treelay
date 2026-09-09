@@ -53,6 +53,29 @@ export type SidecarOpKind =
 /** How `deep-merge` treats arrays (§4). */
 export type ArrayPolicy = "replace" | "concat" | "by-key";
 
+/**
+ * A `by-key` merge needs to know which field identifies an element, and what
+ * order the result should come out in — so the policy alone is not enough to
+ * describe one. `replace` and `concat` ignore both fields.
+ */
+export interface ArrayRule {
+  policy: ArrayPolicy;
+  /** Element field identifying the same logical entry across layers. */
+  key?: string;
+  /**
+   * `stable` (default) keeps the base's order and appends new entries;
+   * `key` sorts the merged result by `key` ascending. Use `key` when the file's
+   * consumer requires order (a migration journal), `stable` otherwise.
+   */
+  order?: "stable" | "key";
+}
+
+/**
+ * Array handling for a layer: one policy for every file, or per-glob rules.
+ * Globs are matched in declaration order, like `merge`.
+ */
+export type ArraysConfig = ArrayPolicy | Record<string, ArrayPolicy | ArrayRule>;
+
 /** Whether non-suffixed text files are rendered (§6). */
 export type RenderMode = "suffix" | "all-text";
 
@@ -103,7 +126,7 @@ export interface Manifest {
   ignore?: string[];
   /** glob → strategy defaults. */
   merge?: Record<string, MergeStrategy>;
-  arrays?: ArrayPolicy;
+  arrays?: ArraysConfig;
   /** Suffix that marks a file for rendering (default ".tmpl"). */
   templateSuffix?: string;
   render?: RenderMode;

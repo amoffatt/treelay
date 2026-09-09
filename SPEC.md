@@ -65,7 +65,7 @@ Each overlay directory carries `treelay.json` (or a `"treelay"` key in
     "package.json": "deep-merge",
     "**/*.png":     "replace"
   },
-  "arrays": "replace",                // deep-merge array policy: replace | concat | by-key
+  "arrays": "replace",                // deep-merge array policy; or per-glob rules (§4)
 
   "templateSuffix": ".tmpl",          // only files ending in this are rendered (see §6)
   "variables": {
@@ -312,7 +312,44 @@ Strategy is chosen three ways, in increasing power:
 - **`.treelay` sidecar** — the canonical, full-power form (below). Suffixes
   desugar to a sidecar op; anything a suffix can express, a sidecar can too.
 
+### Array policy
+
 Array merge policy (`"arrays"`) defaults to **replace** — concat surprises people.
+
+Replace is the right default and also the one deep-merge outcome that *destroys*
+inherited content. A leaf contributing a single element to an inherited list
+discards every element beneath it, while the surrounding object keys merge
+normally — so the file looks merged, `validate` used to call the layer valid, and
+`explain` reported the lower layer as folded in. Every array whose elements are
+discarded is now reported as `dropped-array` (below), the same way a whole-file
+replacement is reported as `shadowed-replace`.
+
+`"arrays"` takes either one policy for the whole layer, or per-glob rules:
+
+```jsonc
+"arrays": {
+  "drizzle/meta/_journal.json": { "policy": "by-key", "key": "idx", "order": "key" },
+  "**/*.yaml":                  "concat",
+  "**/*.json":                  "replace"
+}
+```
+
+| Policy    | Result |
+|-----------|--------|
+| `replace` | higher layer's array wins; inherited elements are dropped and reported |
+| `concat`  | base elements, then the higher layer's, in order |
+| `by-key`  | elements sharing `key` are deep-merged; unmatched ones are appended |
+
+`by-key` is for lists that are really keyed sets — migration journals, database
+bindings, route tables — where every layer legitimately contributes entries.
+Elements that are not objects, or that lack the key, cannot be identified across
+layers and are appended rather than dropped. `order` is `stable` (base order,
+then new entries) or `key` (sort by the key field ascending); use `key` when the
+file's consumer depends on ordering.
+
+A `by-key` rule with no `key` is a hard error rather than a silent fall back to
+replace — falling back would reintroduce exactly the data loss `by-key` was
+chosen to avoid.
 
 ### The `.treelay` sidecar — canonical operation format
 
@@ -411,6 +448,25 @@ Three ways to make the signal go away, in order of preference:
 An explicit `.treelay` sidecar with `op: replace` is likewise never reported —
 the author has already said so. A warning nobody can silence legitimately is a
 warning everyone learns to ignore, which is why the declaration exists.
+
+**1b. A dropped array is reported.** The same discard one level down: a file
+deep-merges cleanly and a list inside it is still thrown away (§4). Reported as
+`dropped-array`, with a JSON Pointer to the list:
+
+```
+! dropped-array: 1 array(s) discarded 3 inherited element(s) under the replace policy:
+  meta/_journal.json/entries  leaf dropped 3 inherited entries from base
+```
+
+Unlike `shadowed-replace` this is reported even when the policy was declared,
+because setting `arrays: "replace"` for a layer is rarely a statement about any
+one list. Set a `by-key` or `concat` rule for the path to make it go away — and
+because the fix is per-path, silencing it means saying what should happen
+instead.
+
+`explain` is held to the same standard: for a file whose inherited array was
+dropped it qualifies its provenance line as `folded in: base (keys only …)` and
+names the discarded pointer, rather than reporting a clean fold-in.
 
 Replacement is a **warning, not an error**: exit status stays 0 so `validate`
 remains usable as a merge gate. A repo that has decided the invariant holds —
@@ -1088,7 +1144,10 @@ const reach = blastRadius(layerDir, { searchRoot });           // who else consu
 
 ## 11. Open decisions
 
-- **Array merge default** — `replace` proposed; revisit if config use cases want `by-key`. **[open]**
+- **Array merge default** — `replace` stands as the default; `by-key` is
+  implemented as an opt-in per-glob rule with a declared key and deterministic
+  ordering (§4), and a dropped array is now reported rather than silent.
+  **[decided]**
 - **What's tracked** — contents always; modes + symlinks proposed yes; empty dirs only via `.keep`. **[open]**
 - **Conflict UX** — **[decided]**, split by direction. For **compile**: fail the
   build, write nothing (§5) — a template that can't compose has no partial output
@@ -1154,5 +1213,6 @@ the headline pull-down lands at step 6, and the bidirectional link closes at
 step 8.
 
 Every command in §9 is now implemented. What remains is the **[open]** design
-work rather than build order: hunk-level reflux, `by-key` array merging, and the
-reflux/variables interaction (§8) — all deferred to v2 on purpose.
+work rather than build order: hunk-level reflux and the reflux/variables
+interaction (§8) — both deferred to v2 on purpose. `by-key` array merging landed
+in §4.

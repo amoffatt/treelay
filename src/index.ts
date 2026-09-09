@@ -29,10 +29,15 @@ export {
   declaredStrategy,
   defaultStrategy,
   deepMerge,
+  arrayRuleFor,
+  mergeByKey,
+  sortByKey,
+  DEFAULT_ARRAY_RULE,
   applyPatch3Way,
   applyMergePatch,
   applyJsonPatch,
 } from "./merge/index.js";
+export type { DeepMergeOptions } from "./merge/index.js";
 export { mergeText3, MERGE_LABELS } from "./merge/patch.js";
 export { mergeStructured3 } from "./merge/structured.js";
 export type {
@@ -47,9 +52,15 @@ export {
   emptyAudit,
   auditIsClean,
   describeReplacements,
+  describeDroppedArrays,
   describeOrphanOps,
 } from "./audit.js";
-export type { ComposeAudit, Replacement, OrphanOp } from "./audit.js";
+export type {
+  ComposeAudit,
+  Replacement,
+  DroppedArray,
+  OrphanOp,
+} from "./audit.js";
 export {
   readState,
   writeState,

@@ -30,6 +30,8 @@ import { strategyFor } from "./merge/index.js";
 import { resolve as resolveGraph } from "./resolve.js";
 import { canonicalRef, parseRef } from "./refs.js";
 import { readState, hasState } from "./state.js";
+import { composeToMemory } from "./verify.js";
+import { emptyAudit, type DroppedArray } from "./audit.js";
 import type {
   Layer,
   MergeStrategy,
@@ -101,6 +103,14 @@ export interface FileExplanation {
   strategy?: MergeStrategy;
   /** Layers whose patches/merges were folded in — mirrors `patchedFrom`. */
   patchedFrom: string[];
+  /**
+   * Arrays in this file whose inherited elements a higher layer discarded (§4).
+   *
+   * `patchedFrom` says a lower layer was folded in, which is true of the file's
+   * object keys and false of any list `replace` threw away. Rather than judge
+   * that a second time here, these come straight from the compose audit.
+   */
+  droppedArrays?: DroppedArray[];
   /** True for a destination file with no template origin (user-owned, §7). */
   owned?: boolean;
 }
@@ -202,8 +212,8 @@ export async function explain(
 
   for (const [i, layer] of graph.layers.entries()) {
     const summary = summaries[i]!;
-    const arrays = layer.manifest.arrays ?? "replace";
-    void arrays; // array policy affects bytes, not provenance
+    // Array policy affects bytes, not which layers contributed — except when
+    // `replace` discards a list, which `droppedArrays` reports from the audit.
     const entries = enumerateLayer(layer, options.destDir);
 
     // Two passes per layer, matching compile: plain files first, then ops.
@@ -277,19 +287,55 @@ export async function explain(
   }
 
   // Assemble, sorted by path for stable output.
+  const dropsByPath = await auditDroppedArrays(graph, values, options.destDir);
+
   const files: Record<string, FileExplanation> = {};
   for (const path of [...history.keys()].sort()) {
     const state = live.get(path);
+    const drops = dropsByPath.get(path);
     files[path] = {
       path,
       contributions: history.get(path)!,
       present: state !== undefined,
       patchedFrom: state?.patchedFrom ?? [],
       ...(state ? { winner: state.fromLayer, strategy: state.strategy } : {}),
+      ...(drops ? { droppedArrays: drops } : {}),
     };
   }
 
   return { layers: summaries, files };
+}
+
+/**
+ * Compose once purely to collect dropped arrays, grouped by output path.
+ *
+ * Explaining is a diagnostic, so paying for a compose is worth a report that
+ * cannot contradict what `compile` would actually do. A compose that fails has
+ * nothing to say about discarded arrays — `validate` is where that failure gets
+ * reported — so explanation continues without the annotation rather than
+ * failing a read-only command.
+ */
+async function auditDroppedArrays(
+  graph: ResolvedGraph,
+  values: Values,
+  destDir: string | undefined,
+): Promise<Map<string, DroppedArray[]>> {
+  const byPath = new Map<string, DroppedArray[]>();
+  const audit = emptyAudit();
+  try {
+    await composeToMemory(graph, values, destDir, {
+      onOrphanOp: "collect",
+      audit,
+    });
+  } catch {
+    return byPath;
+  }
+  for (const drop of audit.droppedArrays) {
+    const list = byPath.get(drop.path);
+    if (list) list.push(drop);
+    else byPath.set(drop.path, [drop]);
+  }
+  return byPath;
 }
 
 /** Explain one sidecar/suffix op, mirroring compile's `applyOp` bookkeeping. */
@@ -489,7 +535,17 @@ export function formatExplanation(
 
     if (file.patchedFrom.length) {
       const names = file.patchedFrom.map((id) => nameOf(result, id));
-      lines.push(`  folded in: ${names.join(", ")}`);
+      // Qualified, not omitted: the lower layer's keys really were folded in,
+      // so claiming otherwise would be its own kind of wrong.
+      const partial = file.droppedArrays?.length ? " (keys only — see below)" : "";
+      lines.push(`  folded in: ${names.join(", ")}${partial}`);
+    }
+    for (const drop of file.droppedArrays ?? []) {
+      lines.push(
+        `  dropped: ${drop.dropped} inherited ` +
+          `${drop.dropped === 1 ? "entry" : "entries"} at ${drop.pointer} ` +
+          `(${drop.by} replaced ${drop.over}'s array)`,
+      );
     }
     if (file.owned) lines.push("  user-owned (not produced by the template)");
     lines.push("");

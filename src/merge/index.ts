@@ -2,21 +2,31 @@
 
 import picomatch from "picomatch";
 import type { MergeStrategy } from "../types.js";
+import { structuredFormat } from "../serde.js";
 
-export { deepMerge } from "./deepMerge.js";
+export { deepMerge, type DeepMergeOptions } from "./deepMerge.js";
+export {
+  arrayRuleFor,
+  mergeByKey,
+  sortByKey,
+  DEFAULT_ARRAY_RULE,
+  type DroppedArray,
+} from "./arrays.js";
 export { applyPatch3Way } from "./patch.js";
 export { applyMergePatch, applyJsonPatch } from "./structured.js";
 
-const STRUCTURED = /\.(json|ya?ml|toml)$/i;
 const BINARY = /\.(png|jpe?g|gif|webp|ico|pdf|woff2?|ttf|zip|gz)$/i;
 
 /**
  * Default strategy for a path when no manifest glob or sidecar specifies one:
  * structured files deep-merge, binaries replace, everything else replaces (text
  * gets patch/append only via explicit sidecar/suffix).
+ *
+ * "Structured" is whatever {@link structuredFormat} can actually round-trip, so
+ * a format can never be routed to deep-merge without a codec behind it.
  */
 export function defaultStrategy(path: string): MergeStrategy {
-  if (STRUCTURED.test(path)) return "deep-merge";
+  if (structuredFormat(path)) return "deep-merge";
   if (BINARY.test(path)) return "replace";
   return "replace";
 }

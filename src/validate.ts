@@ -20,6 +20,7 @@ import { lockfilePath } from "./lockfile.js";
 import {
   describeOrphanOps,
   describeReplacements,
+  describeDroppedArrays,
   emptyAudit,
   type ComposeAudit,
 } from "./audit.js";
@@ -40,7 +41,9 @@ export type IssueCode =
   /** An op modifies a file no lower layer produces (§4) — compile would fail. */
   | "orphan-op"
   /** A layer discards an ancestor's file at the same path, undeclared (§4). */
-  | "shadowed-replace";
+  | "shadowed-replace"
+  /** A layer's array discards an ancestor's elements under `replace` (§4). */
+  | "dropped-array";
 
 export interface ValidationIssue {
   severity: IssueSeverity;
@@ -204,6 +207,23 @@ function auditIssues(
         "Use `.append` to extend the inherited file instead, declare the intent " +
         'with a manifest `merge` glob ("path": "replace"), or pass ' +
         "--allow-replace if every one of these is deliberate.",
+    });
+  }
+
+  if (audit.droppedArrays.length) {
+    const n = audit.droppedArrays.length;
+    const total = audit.droppedArrays.reduce((sum, d) => sum + d.dropped, 0);
+    issues.push({
+      severity: "warning",
+      code: "dropped-array",
+      message:
+        `${n} array(s) discarded ${total} inherited element(s) under the ` +
+        `replace policy:\n` +
+        describeDroppedArrays(audit.droppedArrays),
+      remedy:
+        'Set `arrays` for these paths to {"policy": "by-key", "key": "<field>"} ' +
+        'so every layer contributes entries, or "concat" for ordered lists. ' +
+        "The file merged cleanly otherwise, which is what makes this quiet.",
     });
   }
 }

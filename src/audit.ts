@@ -51,9 +51,38 @@ export interface OrphanOp {
   source: string;
 }
 
+/**
+ * An inherited array discarded by a higher layer under the `replace` policy.
+ *
+ * The sibling of {@link Replacement}, one level down: the file merged, its
+ * object keys combined, and a list inside it was still thrown away. It reads as
+ * a successful deep-merge from every angle — `explain` even reports the lower
+ * layer as folded in, which is true of its keys and false of its list.
+ */
+export interface DroppedArray {
+  /** Output path containing the array. */
+  path: string;
+  /** JSON Pointer to the array within that file. */
+  pointer: string;
+  /** How many inherited elements were discarded. */
+  dropped: number;
+  /** Display name of the layer whose array survives. */
+  by: string;
+  /** Display name of the layer whose elements were discarded. */
+  over: string;
+  /** The winning layer's source file, so the finding is pointable. */
+  source: string;
+}
+
 /** Everything a compose noticed about its own structure. */
 export interface ComposeAudit {
   replacements: Replacement[];
+  /**
+   * Arrays dropped by the default `replace` policy. Unlike {@link Replacement}
+   * these are recorded even when the policy was declared, because declaring
+   * `arrays: "replace"` globally is rarely a statement about any one list.
+   */
+  droppedArrays: DroppedArray[];
   /**
    * Orphan ops seen while composing.
    *
@@ -67,12 +96,30 @@ export interface ComposeAudit {
 /** A fresh collector, ready to be handed to `composeFiles`. */
 export const emptyAudit = (): ComposeAudit => ({
   replacements: [],
+  droppedArrays: [],
   orphanOps: [],
 });
 
 /** True when a compose found nothing structurally surprising. */
 export const auditIsClean = (audit: ComposeAudit): boolean =>
-  audit.replacements.length === 0 && audit.orphanOps.length === 0;
+  audit.replacements.length === 0 &&
+  audit.droppedArrays.length === 0 &&
+  audit.orphanOps.length === 0;
+
+/** One indented line per dropped array, in composition order. */
+export function describeDroppedArrays(
+  drops: readonly DroppedArray[],
+): string {
+  const label = (d: DroppedArray) => `${d.path}${d.pointer === "/" ? "" : d.pointer}`;
+  const width = Math.max(0, ...drops.map((d) => label(d).length));
+  return drops
+    .map(
+      (d) =>
+        `  ${label(d).padEnd(width)}  ${d.by} dropped ${d.dropped} inherited ` +
+        `${d.dropped === 1 ? "entry" : "entries"} from ${d.over}`,
+    )
+    .join("\n");
+}
 
 /** One indented line per replacement, in composition order. */
 export function describeReplacements(

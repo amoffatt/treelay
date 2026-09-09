@@ -29,6 +29,7 @@ import {
   declaredStrategy,
   defaultStrategy,
   deepMerge,
+  arrayRuleFor,
   applyMergePatch,
   applyJsonPatch,
 } from "./merge/index.js";
@@ -355,7 +356,7 @@ function mergeFile(
   source: string,
   ctx: ComposeContext,
 ): void {
-  const arrays = layer.manifest.arrays ?? "replace";
+  const arrayRule = arrayRuleFor(target, layer.manifest.arrays);
   const declared = declaredStrategy(target, layer.manifest.merge);
   const strategy = declared ?? defaultStrategy(target);
   const existing = acc.get(target);
@@ -384,10 +385,22 @@ function mergeFile(
       existing.strategy = strategy;
       break;
     case "deep-merge": {
+      const over = ctx.names.get(existing.fromLayer) ?? existing.fromLayer;
       const merged = deepMerge(
         parseStructured(target, existing.data.toString("utf8")),
         parseStructured(target, data.toString("utf8")),
-        arrays ?? "replace",
+        {
+          rule: arrayRule,
+          onDropArray: (drop) =>
+            ctx.audit?.droppedArrays.push({
+              path: target,
+              pointer: drop.pointer,
+              dropped: drop.dropped,
+              by: ctx.names.get(layer.id) ?? layer.id,
+              over,
+              source,
+            }),
+        },
       );
       existing.data = Buffer.from(stringifyStructured(target, merged), "utf8");
       existing.patchedFrom.push(existing.fromLayer);
